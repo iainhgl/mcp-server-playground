@@ -13,7 +13,7 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done · ⏸ blocked
 
 | Phase | Status | Exit criteria (SPEC §10) | Notes |
 |---|---|---|---|
-| 0. Edge & IdP | ✅ | Trusted-TLS login to `idp.localtest.me`. DCR via curl works | `make check`: 15/15. Browser login as alice automated over the real login + consent pages with the Caddy CA pinned. Survives `make down && make up`. **Manual, one-off:** run `make trust` (keychain prompt), then log in at https://idp.localtest.me/realms/playground/account |
+| 0. Edge & IdP | ✅ | Trusted-TLS login to `idp.localtest.me`. DCR via curl works | `make check`: 15/15. Browser login as alice automated over the real login + consent pages with the Caddy CA pinned. Survives `make down && make up`. Manual check done 2026-11-19: `make trust`, then a browser login as alice at https://idp.localtest.me/realms/playground/account over trusted TLS |
 | 1. Gateway shell | ⬜ | S1, S2, S14: Claude Code connects, `whoami` shows claims | |
 | 2. Stub downstream | ⬜ | Manual PKCE flow returns T4. `/search` filtered per user | |
 | 3. Identity + vault | ⬜ | Scripted Flow B without gateway. S9 | |
