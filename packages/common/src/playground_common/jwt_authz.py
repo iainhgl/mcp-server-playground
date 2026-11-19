@@ -106,6 +106,9 @@ class JwtAuthorizer:
             raise AuthzError("issuer mismatch")
         except jwt.InvalidSignatureError:
             raise AuthzError("bad signature")
+        except jwt.MissingRequiredClaimError as e:
+            # e.g. Keycloak omits `aud` entirely when no audience mapper applies (no mcp:tools scope).
+            raise AuthzError(f"missing required claim {e.claim!r}")
         except jwt.PyJWTError as e:
             raise AuthzError(f"invalid token: {e.__class__.__name__}")
 

@@ -232,6 +232,8 @@ Pinned to Keycloak **26.8.1**. The realm is configured by an idempotent script t
 - **RFC 8707 gap (confirmed in 26.8.1):** the AS metadata does not advertise resource indicators, and the `resource` parameter is accepted but has no effect. Audience comes only from the `mcp:tools` scope mapper. Entra and Cognito differ here too; record them in `docs/aws-mapping.md`.
 - **Discovery:** 26.8.1 natively serves the RFC 8414 path-inserted URL that MCP clients try first (`/.well-known/oauth-authorization-server/realms/playground`), but not the path-inserted `openid-configuration` form. No proxy rewrite is needed. **Check the production RH SSO version**: an older build may need a rewrite at its proxy.
 - No Client ID Metadata Document (CIMD) support is advertised, so MCP clients will use DCR.
+- **Observed with Claude Code (S2):** DCR clients get `consentRequired: true` and optional scopes `mcp:tools` + `offline_access`. Claude Code requests **`offline_access`**, which creates an offline session that outlives SSO idle/max limits and logout. The offline-token policy for MCP clients must be a deliberate decision in production RH SSO/Entra.
+- **Hardening (phase 5):** anonymous DCR does not enforce PKCE (`pkce.code.challenge.method` unset on registered clients). Add a realm client policy with the `pkce-enforcer` executor (S256) for all clients.
 
 ### 6.2 gateway (`services/gateway`)
 - **Endpoints:** `POST/GET /mcp` (Streamable HTTP), `GET /.well-known/oauth-protected-resource/mcp` (RFC 9728 path-suffixed form, served by the SDK and named in `WWW-Authenticate`), `GET /.well-known/oauth-protected-resource` (root form, our own route, for clients that skip the header), `GET /healthz`.
@@ -457,3 +459,4 @@ Design changes discovered during the build. The detail behind each change lives 
 | 2026-11-19 | all | Initial spec. Revised for decisions D1–D3 (stub-only downstream, RH SSO first, off-the-shelf clients) |
 | 2026-11-19 | §6.1, §6.6, §9 | Phase 0: Keycloak configured by an idempotent bootstrap script instead of a realm import. `mcp:tools` is a realm *optional* scope (was: default) so non-MCP clients can't get the gateway audience. RFC 8707 and discovery behaviour of 26.8.1 recorded. OpenBao runs in server mode with Raft (was: dev mode) |
 | 2026-11-19 | §6, §6.2, §8 | Phase 1: MCP SDK 2.x (`MCPServer`, `httpx2`), uv workspace, path-suffixed PRM + root PRM, `WWW-Authenticate` scope wrapper, DNS-rebinding allowed host, session-to-principal binding. S14 expanded to the cases actually tested |
+| 2026-11-19 | §6.1 | S2 with Claude Code: DCR clients get `offline_access` and Claude Code uses it (offline sessions). PKCE isn't enforced for DCR clients, so a hardening item was added |
