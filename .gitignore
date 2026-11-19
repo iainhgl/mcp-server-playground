@@ -1,0 +1,21 @@
+# secrets / local env
+.env
+*.pem
+*.key
+certs/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# tooling / OS
+.DS_Store
+.idea/
+.claude/settings.local.json
+
+# test artefacts
+playwright-report/
+test-results/
