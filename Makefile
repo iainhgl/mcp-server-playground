@@ -67,8 +67,8 @@ check0: certs-local ## Phase 0 check: IdP, DCR, PKCE, audience scoping
 check1: certs-local ## Phase 1 check: gateway 401/PRM discovery, whoami, rejections (S1, S14)
 	@set -a; source .env; set +a; uv run --script scripts/phase1_check.py
 
-claude: certs-local ## Start Claude Code trusting the local CA (Node ignores the macOS keychain)
-	NODE_EXTRA_CA_CERTS=$(CURDIR)/$(CADDY_ROOT) claude
+claude: certs-local ## Start Claude Code trusting the local CA (resume: make claude ARGS=--continue)
+	NODE_EXTRA_CA_CERTS=$(CURDIR)/$(CADDY_ROOT) claude $(ARGS)
 
 ledger: ## Follow token-ledger events from all services
 	@$(COMPOSE) logs -f --no-log-prefix 2>/dev/null | grep --line-buffered '^LEDGER ' | cut -c8- | jq -c .

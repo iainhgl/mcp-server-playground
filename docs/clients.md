@@ -8,6 +8,7 @@ SPEC §6.7. Record what each real client actually does here (S2, S4, S20).
 1. The stack is up: `make up`.
 2. Start Claude Code from this repo with `make claude`. Claude Code runs on Node, which ignores the macOS keychain, so
    `make claude` sets `NODE_EXTRA_CA_CERTS=certs/caddy-root.crt`. Without it, discovery fails with a TLS error.
+   - `make claude ARGS=--continue` resumes your last session with the CA trusted.
    - To make this permanent, add `export NODE_EXTRA_CA_CERTS=<repo>/certs/caddy-root.crt` to your shell profile.
 3. The repo's `.mcp.json` declares the server `atlassian-playground` → `https://gateway.localtest.me/mcp`.
    Approve it when Claude Code asks. If you want it outside this repo instead:
