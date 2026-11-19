@@ -439,3 +439,10 @@ Locally, Entra can be imitated with a second Keycloak realm `entra-sim` that emi
 
 ## 13. Out of scope (v1)
 HA/production hardening. Real KMS/Secrets Manager (covered in phase 8). Jira Cloud (a different OAuth model). Writing to Confluence. Multi-tenant gateway. MS Copilot / Copilot Studio (needs a public endpoint). Connecting to the real Jira instance (D1).
+
+## 14. Changelog
+Design changes discovered during the build. The detail behind each change lives in the PROGRESS.md discoveries log.
+
+| Date | Section | Change |
+|---|---|---|
+| 2026-11-19 | all | Initial spec. Revised for decisions D1–D3 (stub-only downstream, RH SSO first, off-the-shelf clients) |
