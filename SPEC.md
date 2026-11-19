@@ -216,18 +216,22 @@ There are three models. The playground implements 1 and 2 and documents 3 as the
 
 The language is **Python 3.12** with `uv` for every built service. Python matches the `bedrock-agentcore` SDK and the MCP Python SDK. The services are FastAPI, `authlib` / `joserfc` for OAuth/JWT, and `httpx`. A shared package `packages/common` holds JWT validation, ledger emission, fingerprinting and OTel trace propagation.
 
-### 6.1 Keycloak as Red Hat SSO (`infra/keycloak/realm-playground.json`, imported at boot)
+### 6.1 Keycloak as Red Hat SSO (`infra/keycloak/bootstrap.py`, reconciled on every `make up`)
+Pinned to Keycloak **26.8.1**. The realm is configured by an idempotent script through the admin REST API rather than a one-shot realm import, so the config can change without wiping volumes.
 - Realm `playground`, users from §5, user attribute `jira_username`. Token lifetimes are short (5 min) so expiry is easy to watch.
-- **Client scope `mcp:tools`**: includes an **audience mapper** adding `https://gateway.localtest.me/mcp` to `aud`. It is a **realm default client scope**, so DCR-created clients get it automatically.
+- **Client scope `mcp:tools`**: includes an **audience mapper** adding `https://gateway.localtest.me/mcp` to `aud`. It is a **realm *optional* client scope**: DCR-created clients are allowed to request it, but the gateway audience only appears when `scope` includes `mcp:tools`. It is explicitly removed from `portal`, `gateway-svc` and `identity`, so those clients can never mint a gateway-audience token (this is what makes S14 hold).
+- **Declarative user profile:** `jira_username` is added to the realm user profile. Keycloak 24+ silently drops unmanaged attributes.
 - **DCR for MCP clients:** anonymous registration enabled. Client registration policies:
-  - Trusted Hosts allows `localhost`, `127.0.0.1` (Claude Code / VS Code loopback) and `vscode.dev` (VS Code redirect).
+  - Trusted Hosts allows `localhost`, `127.0.0.1` (Claude Code / VS Code loopback) and `vscode.dev` (VS Code redirect). `client-uris-must-match=true` (redirect URIs must be on those hosts). `host-sending-registration-request-must-match=false`, because registrations arrive through the proxy from the host machine.
   - Allowed Client Scopes includes `mcp:tools`.
   - Consent Required stays on (realistic).
 - Pre-registered public client `mcp-public` (PKCE, loopback redirects) as the fallback for clients/IdPs without DCR. **This is the path Entra will force later.**
 - `portal`: confidential, standard flow, redirect `https://portal.localtest.me/callback`.
 - `gateway-svc`: confidential, client credentials only, audience `identity` (T7).
 - `identity`: bearer-only resource.
-- **RFC 8707 gap:** Keycloak may ignore the `resource` parameter. Audience comes from the client-scope mapper instead. Document the version's behaviour in `docs/aws-mapping.md`, because Entra and Cognito differ here too.
+- **RFC 8707 gap (confirmed in 26.8.1):** the AS metadata does not advertise resource indicators, and the `resource` parameter is accepted but has no effect. Audience comes only from the `mcp:tools` scope mapper. Entra and Cognito differ here too; record them in `docs/aws-mapping.md`.
+- **Discovery:** 26.8.1 natively serves the RFC 8414 path-inserted URL that MCP clients try first (`/.well-known/oauth-authorization-server/realms/playground`), but not the path-inserted `openid-configuration` form. No proxy rewrite is needed. **Check the production RH SSO version**: an older build may need a rewrite at its proxy.
+- No Client ID Metadata Document (CIMD) support is advertised, so MCP clients will use DCR.
 
 ### 6.2 gateway (`services/gateway`)
 - **Endpoints:** `POST/GET /mcp` (Streamable HTTP), `GET /.well-known/oauth-protected-resource` (RFC 9728), `GET /healthz`.
@@ -311,7 +315,7 @@ One codebase that runs in two personas (Jira on :2990, Confluence on :1990). It 
 
 ### 6.6 Infra
 - **Postgres 16**: databases `identity`, `keycloak`, `portal`.
-- **OpenBao** (dev mode for v1): transit key `vault-dek`, KV `secret/credential-providers/*`, `secret/clients/*`. The init script is idempotent.
+- **OpenBao** (2.7.1, **server mode, not dev**): single-node Raft storage (2.x has removed `file`), so the transit key survives restarts. `infra/openbao/bootstrap.py` runs on every `up`. On first run it initialises with one unseal key and saves that key and the root token to `.secrets/openbao-init.json` (gitignored). On every run it unseals, waits for the node to become Raft-active, and makes sure transit key `vault-dek` and KV v2 `secret/` exist. Unsealing is a local-only concern, since AWS KMS has no equivalent. Paths `secret/credential-providers/*` and `secret/clients/*` are created by later phases.
 - **mitmproxy** (`mitmweb`): all built services set `HTTPS_PROXY`. Traffic from the MCP client and the browser is not proxied. Use `make claude-mitm` to run Claude Code through mitmproxy too (`HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` bundle) when you want to see Flow A on the wire.
 - **Caddy**: TLS edge plus network aliases.
 
@@ -374,12 +378,14 @@ mcp-server-playground/
 ├── docker-compose.yml
 ├── Makefile                    # up, down, trust, hosts, seed, claude, claude-mitm, vault-dump, test
 ├── .env.example
-├── certs/                      # exported Caddy root CA (gitignored)
+├── certs/                      # exported Caddy root CA + mitmproxy CA (gitignored)
+├── .secrets/                   # OpenBao unseal key + root token (gitignored)
+├── scripts/                    # phase exit-criteria checks (phase0_check.py, …)
 ├── infra/
 │   ├── caddy/Caddyfile
-│   ├── keycloak/realm-playground.json
-│   ├── openbao/init.sh
-│   ├── postgres/init.sql
+│   ├── keycloak/bootstrap.py     # idempotent realm reconcile
+│   ├── openbao/{config.hcl,bootstrap.py}
+│   ├── postgres/init.sh
 │   └── mitmproxy/addons/token_labeler.py
 ├── packages/common/            # jwt validate, ledger, fingerprint, otel
 ├── services/
@@ -446,3 +452,4 @@ Design changes discovered during the build. The detail behind each change lives 
 | Date | Section | Change |
 |---|---|---|
 | 2026-11-19 | all | Initial spec. Revised for decisions D1–D3 (stub-only downstream, RH SSO first, off-the-shelf clients) |
+| 2026-11-19 | §6.1, §6.6, §9 | Phase 0: Keycloak configured by an idempotent bootstrap script instead of a realm import. `mcp:tools` is a realm *optional* scope (was: default) so non-MCP clients can't get the gateway audience. RFC 8707 and discovery behaviour of 26.8.1 recorded. OpenBao runs in server mode with Raft (was: dev mode) |

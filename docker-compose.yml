@@ -1,0 +1,148 @@
+# MCP OAuth playground. See SPEC.md §2 (topology) and §6.6 (infra).
+# Phase 0: TLS edge (Caddy), IdP (Keycloak as RH SSO), Postgres, OpenBao, mitmproxy.
+
+name: mcp-playground
+
+x-bootstrap: &bootstrap
+  image: ghcr.io/astral-sh/uv:0.13.8-python3.12-trixie-slim
+  restart: "no"
+  networks: [mesh]
+  volumes:
+    - uv-cache:/root/.cache/uv
+
+services:
+  caddy:
+    image: caddy:2.11.8-alpine
+    ports:
+      - "127.0.0.1:443:443"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    healthcheck:
+      # The internal CA root exists once Caddy has issued its first site cert.
+      test: ["CMD", "test", "-f", "/data/caddy/pki/authorities/local/root.crt"]
+      interval: 2s
+      retries: 30
+    networks:
+      mesh:
+        # Containers resolve every public hostname to the TLS edge, so URLs
+        # (issuer, redirect_uri, audience) are identical inside and outside Docker.
+        aliases:
+          - idp.localtest.me
+          - gateway.localtest.me
+          - identity.localtest.me
+          - portal.localtest.me
+          - jira.localtest.me
+          - confluence.localtest.me
+
+  postgres:
+    image: postgres:16.16-alpine
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run make env}
+      PG_KEYCLOAK_PASSWORD: ${PG_KEYCLOAK_PASSWORD}
+      PG_IDENTITY_PASSWORD: ${PG_IDENTITY_PASSWORD}
+      PG_PORTAL_PASSWORD: ${PG_PORTAL_PASSWORD}
+    volumes:
+      - ./infra/postgres/init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      retries: 30
+    networks: [mesh]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    command: ["start"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${PG_KEYCLOAK_PASSWORD}
+      KC_HOSTNAME: https://idp.localtest.me
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HTTP_ENABLED: "true"            # TLS terminates at Caddy
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN_USER}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD}
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 5s
+      start_period: 120s
+      retries: 30
+    networks: [mesh]
+
+  keycloak-init:
+    <<: *bootstrap
+    command: ["uv", "run", "--script", "/bootstrap/bootstrap.py"]
+    environment:
+      KC_URL: http://keycloak:8080
+      KC_ADMIN_USER: ${KC_ADMIN_USER}
+      KC_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD}
+      SEED_USER_PASSWORD: ${SEED_USER_PASSWORD}
+      PORTAL_CLIENT_SECRET: ${PORTAL_CLIENT_SECRET}
+      GATEWAY_SVC_CLIENT_SECRET: ${GATEWAY_SVC_CLIENT_SECRET}
+    volumes:
+      - uv-cache:/root/.cache/uv
+      - ./infra/keycloak:/bootstrap:ro
+    depends_on:
+      keycloak: { condition: service_healthy }
+
+  openbao:
+    image: openbao/openbao:2.7.1
+    command: ["server"]
+    volumes:
+      - ./infra/openbao/config.hcl:/openbao/config/config.hcl:ro
+      - bao-data:/openbao/file
+    ports:
+      - "127.0.0.1:8200:8200"
+    healthcheck:
+      # 200 even when sealed/uninitialised: we only want "process is serving".
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8200/v1/sys/health?sealedcode=200&uninitcode=200"]
+      interval: 2s
+      retries: 30
+    networks: [mesh]
+
+  openbao-init:
+    <<: *bootstrap
+    command: ["uv", "run", "--script", "/bootstrap/bootstrap.py"]
+    environment:
+      BAO_ADDR: http://openbao:8200
+      SECRETS_FILE: /secrets/openbao-init.json
+    volumes:
+      - uv-cache:/root/.cache/uv
+      - ./infra/openbao:/bootstrap:ro
+      - ./.secrets:/secrets
+    depends_on:
+      openbao: { condition: service_healthy }
+
+  mitmproxy:
+    image: mitmproxy/mitmproxy:12.3.0
+    command:
+      - mitmweb
+      - --web-host=0.0.0.0
+      - --web-port=8081
+      - --listen-port=8080
+      - --set=web_password=${MITM_WEB_PASSWORD}
+      # Upstream is always Caddy; trust its internal CA rather than disabling verification.
+      - --set=ssl_verify_upstream_trusted_ca=/caddy-data/caddy/pki/authorities/local/root.crt
+    volumes:
+      - ./certs/mitmproxy:/home/mitmproxy/.mitmproxy
+      - caddy-data:/caddy-data:ro
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      caddy: { condition: service_healthy }
+    networks: [mesh]
+
+networks:
+  mesh: {}
+
+volumes:
+  caddy-data: {}
+  pg-data: {}
+  bao-data: {}
+  uv-cache: {}

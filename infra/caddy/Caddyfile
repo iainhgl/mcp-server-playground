@@ -1,0 +1,14 @@
+{
+	# Issue every site cert from Caddy's internal CA (export with `make trust`).
+	local_certs
+	skip_install_trust
+	auto_https disable_redirects
+}
+
+idp.localtest.me {
+	# No discovery rewrites: Keycloak 26.8 natively serves the RFC 8414
+	# path-inserted URL MCP clients try first
+	# (/.well-known/oauth-authorization-server/realms/playground).
+	# Older RH SSO builds may not. See PROGRESS.md discoveries.
+	reverse_proxy keycloak:8080
+}

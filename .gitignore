@@ -19,3 +19,6 @@ __pycache__/
 # test artefacts
 playwright-report/
 test-results/
+
+# local runtime secrets (OpenBao unseal key/root token)
+.secrets/
