@@ -40,3 +40,26 @@ SPEC §6.7. Record what each real client actually does here (S2, S4, S20).
 | Where tokens are stored | Client-side (Claude Code credential store), not inspected |
 | Behaviour when T1 expires (5 min) | Not yet observed |
 | Result | `gateway___whoami` → alice, `azp` = the DCR client id, `scope` includes `mcp:tools` ✅ |
+
+## Claude Code end to end (S4)
+
+### Steps
+1. Stack up (`make up`), CA trusted, Claude Code started with `make claude` (second terminal).
+2. `/mcp` → `atlassian-playground` should show its tools (`jira___*`). If it says reconnect/needs auth, Authenticate as **alice**.
+3. Ask: *"List my Jira issues"*.
+   - The gateway can't use a Jira token yet, so it signals consent. Note **which signal** Claude Code shows: a URL-elicitation prompt (`-32042`) or the tool error text with a link.
+4. Open the link. Jira login as **alice** (password `SEED_USER_PASSWORD`), then **Allow**. You should land on the portal saying **"Jira connected"**. Note whether you were asked to log in to Keycloak again (H3).
+5. Back in Claude Code: *"try again"*. Expect ALPHA-1..3 only.
+6. Optional: *"add a comment to ALPHA-2 saying hello"* → a WRITE consent link → Allow → retry → the comment is added as alice.
+7. Look at https://portal.localtest.me/ledger (last 15 min) and mitmweb (http://localhost:8081, labels in the comment column).
+
+### Observed (S4, fill in)
+| Item | Observed |
+|---|---|
+| Claude Code version | |
+| Declares `elicitation.url`? (ledger `consent.signalled mode=`) | |
+| How the consent link was presented | |
+| Did the model retry on its own after consent? | |
+| H3: Keycloak login prompt at the portal? | |
+| Result after consent | |
+| WRITE step-up (optional) | |

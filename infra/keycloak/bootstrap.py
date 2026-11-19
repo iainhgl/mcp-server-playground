@@ -92,7 +92,8 @@ CLIENTS = [
         "directAccessGrantsEnabled": False,
         "redirectUris": ["https://portal.localtest.me/callback"],
         "webOrigins": ["https://portal.localtest.me"],
-        "attributes": {"pkce.code.challenge.method": "S256"},
+        "attributes": {"pkce.code.challenge.method": "S256",
+                       "post.logout.redirect.uris": "https://portal.localtest.me/*"},
         # User tokens (T2) say they're for the portal, so identity can accept them as `userToken`
         # while the gateway still rejects them.
         "_mappers": [audience_mapper("audience: portal", "portal")],

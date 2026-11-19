@@ -430,6 +430,32 @@ async def complete_resource_token_auth(request: Request, body: dict) -> dict:
     raise ApiError(403, "AccessDeniedException", "user does not match the user who started this session")
 
 
+# ------------------------------------------------------------------ playground extensions (portal "Connected apps")
+
+@api
+async def list_user_connections(request: Request, body: dict) -> dict:
+    await _caller(request, "x-ListUserConnections")
+    async with db.pool.connection() as conn:
+        rows = await (await conn.execute(
+            """select workload_name, provider_name, scopes, access_expires_at, created_at, updated_at
+               from token_vault where user_id = %s order by provider_name""", (body["userId"],))).fetchall()
+    return {"connections": [{k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in r.items()}
+                            for r in rows]}
+
+
+@api
+async def delete_user_connection(request: Request, body: dict) -> dict:
+    """Forget the vaulted tokens. Jira DC has no revocation endpoint (stub-fidelity F16/F17), so an
+    already-issued T4 stays valid at Jira until it expires, unless the user also revokes it in Jira."""
+    await _caller(request, "x-DeleteUserConnection")
+    async with db.pool.connection() as conn:
+        n = (await conn.execute(
+            "delete from token_vault where user_id = %s and workload_name = %s and provider_name = %s",
+            (body["userId"], body["workloadName"], body["providerName"]))).rowcount
+    ledger.emit(SERVICE, "vault.deleted_by_user", user_id=body["userId"], provider=body["providerName"], rows=n)
+    return {"deleted": n}
+
+
 # ------------------------------------------------------------------ app
 
 async def healthz(_: Request) -> Response:
@@ -453,5 +479,7 @@ app = Starlette(lifespan=lifespan, routes=[
     Route("/identities/GetResourceOauth2Token", get_resource_oauth2_token, methods=["POST"]),
     Route("/identities/CompleteResourceTokenAuth", complete_resource_token_auth, methods=["POST"]),
     Route("/identities/oauth2/callback", oauth2_callback, methods=["GET"]),
+    Route("/identities/x-ListUserConnections", list_user_connections, methods=["POST"]),
+    Route("/identities/x-DeleteUserConnection", delete_user_connection, methods=["POST"]),
     Route("/admin/vault", admin_vault, methods=["GET"]),
 ])

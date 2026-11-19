@@ -13,5 +13,16 @@ authorizers:
     # Tighten later with a pattern, or by pre-registering clients (as Entra will require).
     allowedClients: ["*"]
 
-# Downstream targets arrive in phase 4.
-targets: []
+# ≈ AgentCore Identity, which AgentCore Gateway calls internally. Here the gateway calls it over HTTPS
+# with its own service token (gateway-svc, T7 ≈ IAM role). The secret comes from env GATEWAY_SVC_CLIENT_SECRET.
+identity:
+  url: https://identity.localtest.me/identities
+  workloadName: gateway
+  serviceClientId: gateway-svc
+  returnUrl: https://portal.localtest.me/oauth/return
+
+# ≈ AgentCore Gateway targets: tool names are <target>___<tool>.
+targets:
+  - name: jira
+    baseUrl: https://jira.localtest.me
+    credentialProvider: { name: jira-dc, type: oauth2, flow: USER_FEDERATION }

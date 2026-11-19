@@ -30,6 +30,9 @@ CALLER_ACL: dict[str, set[str]] = {
     "GetWorkloadAccessTokenForUserId": {"portal-svc"},
     "GetResourceOauth2Token": {"gateway-svc", "portal-svc"},
     "CompleteResourceTokenAuth": {"portal-svc"},
+    # Playground extensions (no AgentCore equivalent) for the portal's "Connected apps" page.
+    "x-ListUserConnections": {"portal-svc"},
+    "x-DeleteUserConnection": {"portal-svc"},
 }
 # Which user tokens identity accepts as `userToken`: the gateway token (T1) or the portal token (T2).
 USER_TOKEN_AUDIENCES = os.environ.get("USER_TOKEN_AUDIENCES", "https://gateway.localtest.me/mcp,portal").split(",")

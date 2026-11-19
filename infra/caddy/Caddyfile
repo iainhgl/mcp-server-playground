@@ -25,6 +25,10 @@ identity.localtest.me {
 	reverse_proxy identity:8001
 }
 
+portal.localtest.me {
+	reverse_proxy portal:3000
+}
+
 jira.localtest.me {
 	reverse_proxy jira:2990
 }

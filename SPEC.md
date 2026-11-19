@@ -93,7 +93,7 @@ This table is the core of the exercise. Every token in the system appears here, 
 |---|---|---|---|---|---|---|
 | **T1** | Gateway access token | Keycloak (auth code + PKCE, run **by the MCP client**) | `aud=https://gateway.localtest.me/mcp`, scope `mcp:tools`, `azp=<client's DCR client_id>` | MCP client | 5 min | client-local (Claude Code: macOS keychain) |
 | **T1r** | Refresh token for T1 | Keycloak | Same client + user | MCP client | 30 min idle | client-local |
-| **T2** | Portal session token | Keycloak (portal's own login, usually silent SSO) | `aud=portal` | portal (server-side session) | 5 min | portal session store |
+| **T2** | Portal user token | Keycloak (portal's own login, silent with SSO) | `aud=portal` | portal, for **one request** (the binding call) | 5 min | **none**: never stored. The portal cookie holds only user id + name |
 | **T3** | Workload access token | identity | Binds `workload=gateway` + `user=iss|sub` from T1 | gateway (in memory, per tool call) | 5 min | none |
 | **T4** | Jira access token | Jira DC (stub) | Jira user who consented, scopes `READ`/`WRITE` | identity token vault **only** | DC default ≈2 h (stub: configurable, 60 s for tests) | Postgres, envelope-encrypted |
 | **T5** | Jira refresh token (rotating) | Jira DC (stub) | Same | identity token vault **only** | DC default ≈90 d | Postgres, envelope-encrypted |
@@ -267,8 +267,11 @@ Pinned to Keycloak **26.8.1**. The realm is configured by an idempotent script t
       spec: specs/confluence-dc-subset.yaml
       credentialProvider: { name: confluence-dc, type: oauth2, flow: USER_FEDERATION, scopes: [READ] }
   ```
-- **Tools (v1):** `jira___get_myself`, `jira___search_issues(jql, maxResults)`, `jira___get_issue(key)`, `jira___add_comment(key, body)` (needs `WRITE` and exercises step-up), `confluence___search(cql)`, `confluence___get_page(id)`. Plus `gateway___whoami`, which needs no downstream and returns the decoded inbound claims, useful for phase 3.
-- **Consent signalling:** if the client declared URL-mode elicitation in `initialize` capabilities, the gateway raises `-32042 URLElicitationRequiredError` (spec 2025-11-25). Otherwise it returns a tool result with `isError: true`, a short human message and the link. **The fallback is the expected path for today's off-the-shelf clients.** Phase 4 records what Claude Code and VS Code actually do.
+- **Tools:** `jira___get_myself`, `jira___search_issues(jql, max_results)`, `jira___get_issue(key)` (with comments), `jira___add_comment(key, body)` (needs `WRITE`, so it triggers step-up consent). `gateway___whoami` (no downstream). Confluence tools come in phase 6. Results are trimmed to what an LLM needs (key, summary, status, …).
+- **Downstream path** (`gateway/downstream.py`, config block `identity:`): per call, T7 (gateway-svc client credentials, cached) → `GetWorkloadAccessTokenForJWT(T1)` → T3 → `GetResourceOauth2Token(T3, jira-dc, scopes)` → Jira with `Bearer T4`. T4 is used for exactly one request and never stored or logged. Gateway → identity goes over HTTPS through mitmproxy (in AWS this hop is internal to AgentCore).
+- **Jira 401 on a vaulted T4** (revoked in Jira, C6): the gateway calls `GetResourceOauth2Token(forceAuthentication=true)` and returns the new consent link. There's no forced-refresh attempt first.
+- **Jira errors** are passed through as tool errors. They're already non-revealing ("does not exist", "no permission").
+- **Consent signalling:** if the client declared `capabilities.elicitation.url` in `initialize`, the tool raises the SDK's `UrlElicitationRequiredError` → JSON-RPC error **`-32042`** with `data.elicitations[0] = {mode: url, url, message, elicitationId = fp(sessionUri)}`. Otherwise it raises `ToolError`, giving a tool result with `isError: true` and text *"Jira access … isn't connected yet (needs READ). Open this link … then ask again: <url>"* (the SDK prefixes "Error executing tool …:"). Both paths are verified in `check4`. What Claude Code and VS Code actually show is recorded in `docs/clients.md` (S4/S20).
 - **Must not:** cache T4 beyond a single call, log T4, or accept tool args that influence user identity.
 
 ### 6.3 identity (`services/identity`)
@@ -289,6 +292,7 @@ The operation names and request/response fields mirror AgentCore Identity. The t
 | `POST /identities/GetResourceOauth2Token` | gateway-svc, portal-svc | Verify T3 → check the return URL is on the workload allowlist → vault lookup, or refresh **under `SELECT … FOR UPDATE`**, or start 3LO → `{accessToken}` or `{authorizationUrl, sessionUri, sessionStatus: IN_PROGRESS}`. `forceAuthentication` skips the vault. `oauth2Flow` must be `USER_FEDERATION` |
 | `GET  /identities/oauth2/callback` | browser | `state` → session (`FOR UPDATE`). Exchange the code with the PKCE verifier + client secret (from OpenBao), park T4/T5 encrypted, session `PENDING_BINDING`, then 302 → `returnUrl?session_id=<sessionUri>`. On error: session `FAILED`, then 302 with `&error=` |
 | `POST /identities/CompleteResourceTokenAuth` | portal-svc | Validate `userIdentifier.userToken` (T2, or T1) or take `userId`. **If `iss\|sub` ≠ the session's starter, the session is `FAILED` and the parked tokens are wiped** (403). Otherwise re-encrypt for the vault row, upsert, and mark the session `COMPLETED` |
+| `POST /identities/x-ListUserConnections`, `x-DeleteUserConnection` | portal-svc | **Playground extensions** (no AgentCore equivalent) for the portal's Connected apps page: vault metadata for a `userId`, and forgetting an entry |
 | `GET /admin/vault` | admin | Debug: vault metadata only (no ciphertext) |
 
 - **"Same user"** means the same `iss|sub`. `userToken` is accepted with `aud` ∈ {`https://gateway.localtest.me/mcp`, `portal`}. A user token is **never** accepted as a caller credential (and the reverse), because service clients (`gateway-svc`, `portal-svc`) are separate Keycloak clients with no user flows.
@@ -311,10 +315,14 @@ create table token_vault (
 The persisted ledger table (§7) comes with the portal viewer (phase 4).
 
 ### 6.4 portal (`services/portal`)
-- `/oauth/return`: OIDC login (silent if a Keycloak session exists), then `CompleteResourceTokenAuth`, then a "Connected, return to your assistant" page.
-- `/connections`: lists the current user's vault entries (metadata from identity), with Connect / Disconnect per provider (pre-consent path).
-- `/ledger`: ledger viewer (§7).
-- This is the one piece you will **also need in AWS**. AgentCore requires you to host the return URL.
+This is the one piece you will **also need in AWS**: AgentCore requires you to host the return URL. Starlette, server-rendered pages.
+- **Identities:** it logs users in with the `portal` client (auth code + PKCE, T2 `aud=portal`), and calls identity with its **service** credential `portal-svc`, never with a user's token.
+- **Session:** a signed cookie (HMAC, `PORTAL_COOKIE_KEY`) holding only `{user_id = iss|sub, name, exp}`. **The portal stores no tokens.** T2 exists only for the length of the request that uses it.
+- **`/oauth/return?session_id=…` (H3, B10–B13):** it *always* runs a fresh OIDC login (`/login?next=bind:<sessionUri>`), which is silent when Keycloak already has an SSO session. In the OIDC callback it calls `CompleteResourceTokenAuth(sessionUri, userIdentifier.userToken = fresh T2)`, shows "Jira connected" (or why not), and discards T2. `?error=` from identity is shown as "not connected".
+- **`/connections`:** lists the user's vault entries (`x-ListUserConnections`). **Connect** = pre-consent (S18): `GetWorkloadAccessTokenForUserId` → `GetResourceOauth2Token` → redirect to `authorizationUrl` (or "already connected"). **Disconnect** = `x-DeleteUserConnection`. That only *forgets* the vaulted tokens: Jira DC has no revocation API, so the user must revoke in Jira to kill an already-issued T4. POSTs are guarded by SameSite=Lax + an `Origin` check.
+- **`/ledger`:** a cross-service token timeline from the ledger DB (read-only role `portal`), with a filter, table, and an auto-generated Mermaid sequence of notes per service.
+- **`/logout`:** clears the cookie and calls Keycloak end-session (`post.logout.redirect.uris` set on the client).
+- Uvicorn access logging is **off** (here and in identity) because callback URLs carry one-time `code`/`state`. The ledger records those events without secrets.
 
 ### 6.5 atlassian-stub (`services/atlassian-stub`)
 One codebase that runs in two personas, `PERSONA=jira` (:2990, built in phase 2) and `confluence` (:1990, phase 6). It is plain Starlette with state in **SQLite on a volume** (`jira-data`), so tokens survive restarts as they would in real Jira. Tokens, codes and PATs are stored **only as SHA-256 hashes**. It is the only downstream (D1), so it has to match the DC behaviour that affects auth:
@@ -351,16 +359,15 @@ One codebase that runs in two personas, `PERSONA=jira` (:2990, built in phase 2)
 
 ## 7. Observability: watching the tokens move
 
-1. **Token ledger.** Every built service emits a ledger event on every token receipt, validation, mint, store, refresh, use and revoke:
+1. **Token ledger.** Every built service emits a ledger event on every token receipt, validation, mint, store, refresh, use and revoke (`playground_common.ledger`):
    ```json
-   {"ts":"…","trace_id":"…","service":"identity","event":"vault.store",
-    "token":"T4","fp":"3f9a1c0b7e21","iss":"jira.localtest.me","sub":"alice",
-    "aud":null,"scope":["READ"],"exp":"…","user_id":"kc|8d2…","workload":"gateway"}
+   {"ts":"…","service":"identity","event":"vault.store","token":"T4","fp":"3f9a1c0b7e21",
+    "user_id":"https://idp…/realms/playground|6ce1…","provider":"jira-dc","scopes":["READ"]}
    ```
-   Events go into the `token_ledger` table. The portal **Ledger viewer** renders one flow as a timeline and as an auto-generated Mermaid sequence diagram. Off-the-shelf clients won't send `traceparent`, so the gateway starts the trace. The consent session id links Flow B's browser leg back to it.
-2. **mitmweb** shows the raw HTTP of each hop. A mitmproxy addon decodes JWTs inline and labels them T1–T9 by matching fingerprints against the ledger.
+   Events go to stdout (`LEDGER ` prefix, `make ledger`) **and** to the `ledger` Postgres DB (`events` table) through an **insert-only** role `ledger_writer`, from a background thread that never blocks or fails a request. `db-init` (an idempotent `psql` job) creates the DB and roles on every `up`. The portal `/ledger` page renders the timeline. Off-the-shelf clients send no `traceparent`, so events are correlated by user id, token fingerprints and the session-URI fingerprint.
+2. **mitmweb** shows the raw HTTP of each server-to-server hop. The addon `infra/mitmproxy/addons/token_labeler.py` labels each flow's tokens: Authorization header, identity JSON bodies (`userToken`, `workloadIdentityToken`) and token responses. JWTs are labelled from their claims (T1/T2/T3/T7), opaque Jira tokens from context (T4/T5), and each label carries the same fingerprint as the ledger. It's in the flow comment and the flow is marked. **mitmweb shows raw tokens by design** (the "attacker on the wire" view, local only).
 3. **Keycloak admin console** → Sessions / Clients shows DCR-registered clients and live sessions, so you can watch what Claude Code registered.
-4. **`make vault-dump`** prints the vault rows (metadata, wrapped DEK, ciphertext length) so you can see what an attacker with database access would get.
+4. **Vault view:** `GET https://identity.localtest.me/admin/vault` (header `X-Identity-Admin`) shows vault metadata. `docker compose exec postgres psql -U postgres -d identity -c 'select * from token_vault'` shows what an attacker with database access would get: ciphertext and a wrapped key.
 
 ---
 
@@ -481,3 +488,4 @@ Design changes discovered during the build. The detail behind each change lives 
 | 2026-11-19 | — | Added `docs/architecture.md`, a living architecture and token-flow document with per-step verification markers |
 | 2026-11-19 | §6.5 | Phase 2: stub built. Details recorded: SQLite + hashed tokens, `client_secret_basic` too, hierarchical scopes, no-redirect errors, grant per consent, Jira-style hiding (JQL 'does not exist', issue 404), app link seeded from `.env`, admin/fault endpoints, ledger events, fidelity checklist F1–F27 |
 | 2026-11-19 | §3, §6.1, §6.3 | Phase 3: identity built. Three planes (admin key / service tokens + caller ACL / browser state). New Keycloak client `portal-svc` + `aud=portal` on T2. Session lifecycle incl. PENDING_BINDING. AAD-bound envelope encryption. Least-privilege OpenBao token. Refresh under row lock. `scopeHierarchy` extension. AWS-style errors |
+| 2026-11-19 | §3, §6.2, §6.3, §6.4, §7 | Phase 4: gateway Jira tools + downstream path + both consent signals + 401→re-consent. Portal built (always re-auth on return, T2 never stored, signed cookie, pre-consent, Disconnect = forget only). Ledger persisted to a `ledger` DB through an insert-only role. mitmproxy token labeler. Access logs off where URLs carry codes |

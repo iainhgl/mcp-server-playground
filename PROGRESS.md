@@ -2,7 +2,7 @@
 
 Living status for the build described in [SPEC.md](SPEC.md). The architecture and token-flow view, with per-step verification markers, is in [docs/architecture.md](docs/architecture.md). Update this file in the same commit as the work it describes.
 
-**Current phase:** 4, End-to-end 3LO (not started). Phases 0–3 done
+**Current phase:** 4, End-to-end 3LO (🟨 automated checks pass; waiting on the manual S4 run in Claude Code)
 **Last updated:** 2026-11-19
 
 ---
@@ -17,7 +17,7 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done · ⏸ blocked
 | 1. Gateway shell | ✅ | S1, S2, S14: Claude Code connects, `whoami` shows claims | `make check1`: 25/25 (S1 + S14 + session binding + ledger + invariant 6). S2 done in Claude Code 2.1.328. Observations in `docs/clients.md` |
 | 2. Stub downstream | ✅ | Manual PKCE flow returns T4. `/search` filtered per user | `make check2`: 36/36 and repeatable. Jira persona: OAuth provider (PKCE, rotation, both client auth methods, scope hierarchy), login/consent/profile pages, REST v2 subset with Jira-style hiding, PATs, faults. Fidelity assumptions F1–F27 in `docs/stub-fidelity.md` |
 | 3. Identity + vault | ✅ | Scripted Flow B without gateway. S9 | `make check3`: 36/36, repeatable, passes after `make down && make up`. The script plays gateway (gateway-svc) and portal (portal-svc + T2) |
-| 4. End-to-end 3LO | ⬜ | S3, S4, S5, S8, S15, S18 | |
+| 4. End-to-end 3LO | 🟨 | S3, S4, S5, S8, S15, S18 | `make check4`: 30/30. All five checks pass together. **S4 (Claude Code) pending.** Runbook: `docs/clients.md` §S4 |
 | 5. Lifecycle & attacks | ⬜ | S6, S7, S10–S13, S16, S17, S19 | |
 | 6. More clients & sources | ⬜ | S20, Confluence tools | |
 | 7. Second IdP | ⬜ | Design record + one §12 option working | |
@@ -29,23 +29,23 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done · ⏸ blocked
 |---|---|---|
 | S1 | ✅ | `make check1`: 401 → PRM via `resource_metadata` → RFC 8414 AS metadata → DCR → PKCE with challenge scope → initialize → tools/list → whoami=alice |
 | S2 | ✅ | 2026-11-19, Claude Code 2.1.328: DCR as "Claude Code (atlassian-playground)", browser login + consent as alice, `gateway___whoami` → alice (ledger 14:21:16, azp b8bb83e8…). Details: docs/clients.md |
-| S3 | ⬜ | |
-| S4 | ⬜ | |
-| S5 | ⬜ | |
+| S3 | ✅ | `check4`: first `jira___search_issues` → isError + link → Jira login/consent → identity → portal (silent SSO) → binding → retry → ALPHA only |
+| S4 | ⬜ | Manual: Claude Code → ask about Jira → consent link → browser → retry (docs/clients.md) |
+| S5 | ✅ | `check4`: repeat calls (search, get_issue) with no consent. BETA-1 → 404 tool error, JQL on BETA → 'does not exist' |
 | S6 | 🟨 | Identity level ✅ (`check3`): a stale T4 is refreshed transparently and the rotated T5 stored. Through the gateway: phase 4–5 |
 | S7 | 🟨 | Identity level ✅ (`check3`): 10 concurrent requests → exactly 1 refresh at Jira (row lock), 9 vault hits, same T4. Through the gateway: phase 5 |
-| S8 | ⬜ | |
+| S8 | ✅ | `check4`: bob consents separately (via -32042 URL elicitation), sees BETA only. alice unaffected. 2 vault rows |
 | S9 | ✅ | `check3`: bob's T2 completing alice's session → 403 `binding.mismatch`. Session FAILED, parked T4/T5 wiped, nothing stored, and alice can't reuse the session |
 | S10 | ⬜ | |
 | S11 | ⬜ | |
-| S12 | 🟨 | Stub side ✅ (`check2`): dave has no Jira account, so the Jira login fails. End to end (clean tool error, no vault row) waits for phase 4 |
-| S13 | 🟨 | Stub ✅ (`check2`). Identity ✅ (`check3`): revoked grant → refresh `invalid_grant` → row purged → new authorizationUrl. Tool-level behaviour: phase 4–5 |
+| S12 | ✅ | `check4`: dave → link → Jira login fails → no vault row. Later calls still return a clean consent link |
+| S13 | 🟨 | Stub ✅, identity purge ✅ (`check3`), gateway C6 ✅ (`check4`: Jira 401 → `downstream.unauthorized` → new consent link). Disable-user/offline-session aspects: phase 5 |
 | S14 | ✅ | `make check1`: 5 bad tokens → 401, each with a ledger reason (audience ×3, bad signature, untrusted issuer). Keycloak refuses `mcp:tools` to portal. Bob's token on alice's session → 404 |
-| S15 | 🟨 | Stub side ✅ (`check2`): Keycloak T1 sent to Jira → 401. Gateway-path check waits for phase 4 |
-| S16 | ⬜ | |
+| S15 | ✅ | `check4`: no T1 fp in any Jira api event. Gateway downstream fps = Jira api.call fps. mitmweb labels every Jira API call `→ T4` |
+| S16 | 🟨 | `check4`: add_comment with READ → WRITE consent link → consent → comment as alice. READ then works without re-consent (scopeHierarchy). Phase 5 for edge cases |
 | S17 | ⬜ | |
-| S18 | ⬜ | |
-| S19 | 🟨 | Gateway ✅ (`check1`), Jira stub ✅ (`check2`), identity ✅ (`check3`, 19 tokens). Portal: phase 4 |
+| S18 | ✅ | `check4`: carol connects in the portal (Jira user carol.w) → first MCP call needs no consent → ALPHA+BETA |
+| S19 | ✅ | All 4 service logs + the ledger DB contain no raw tokens (`check4`, plus check1–3 per service). Access logs turned off where callback URLs carry codes |
 | S20 | ⬜ | |
 
 ## Risks to verify (SPEC §11)
@@ -67,6 +67,12 @@ Newest first. Record anything learned while building that differs from or adds t
 
 | Date | Phase | Discovery | Spec impact |
 |---|---|---|---|
+| 2026-11-19 | 4 | **Uvicorn access logs recorded one-time OAuth `code` + `state`** from callback URLs (portal `/callback`, identity `/identities/oauth2/callback`). Short-lived, but credentials, so access logs are now off for identity and portal. The ledger records the events without secrets. Production: make sure ALB/CloudFront/API Gateway access logs on the return-URL app don't keep query strings. | §6.4 |
+| 2026-11-19 | 4 | **H3 is silent end to end through the real portal** (scripted browser, non-offline login): the user saw only Jira's login and consent. The portal re-authenticates on every return, so binding always uses a fresh T2 and **the portal stores no tokens at all**. | §3 T2, §6.4 |
+| 2026-11-19 | 4 | MCP SDK 2.3 surfaces `ToolError` as `isError: true` with text prefixed *"Error executing tool <name>: "*. `UrlElicitationRequiredError` becomes a top-level JSON-RPC error (-32042), not a tool result. Which one a client gets depends only on its declared `capabilities.elicitation.url`. | §6.2 |
+| 2026-11-19 | 4 | **Disconnect in the portal only forgets vaulted tokens.** Jira DC has no revocation API (F16/F17), so an issued T4 keeps working at Jira until it expires (≈2 h) unless the user revokes in Jira. That's a real gap for "remove access now" requests. | §6.4, stub-fidelity |
+| 2026-11-19 | 4 | C6 is implemented as "Jira 401 → force a new consent". It doesn't first try a forced refresh, because with rotation-on-revoke semantics a refresh after a 401 would fail anyway. Revisit in phase 5. | §6.2 |
+| 2026-11-19 | 4 | Starlette form parsing needs `python-multipart`: the portal's POSTs returned 500 until it was added. Found by `check4` (S18). | — |
 | 2026-11-19 | 3 | **The portal needs two Keycloak identities.** A user-login client (`portal`, T2 `aud=portal`) and a separate service client (`portal-svc`) for calling identity. With one client, a user's T2 would also carry the identity audience and could pass as the portal service. In AWS the portal's IAM role does this job. | §6.1, §6.3 |
 | 2026-11-19 | 3 | **Portal login (H3) was silent** after a scripted MCP login (no `offline_access`) in the same browser, because the Keycloak SSO cookie carried over. Still to confirm with Claude Code's `offline_access` login (phase 4). | architecture §2 |
 | 2026-11-19 | 3 | Keycloak puts `account` in `aud` on service, portal and user tokens (default roles). It's harmless because every check names its own audience, but tokens are broader than they look. | §6.1 |
@@ -103,13 +109,10 @@ Newest first. Record anything learned while building that differs from or adds t
 Caddy 2.11.8 · Postgres 16.16 · psycopg 3.3.9 · cryptography 50.0.2 · Keycloak 26.8.1 · OpenBao 2.7.1 · mitmproxy 12.3.0 · uv 0.13.8 (python 3.12, trixie) · mcp 2.3.0 · httpx2 2.16.2 · PyJWT 2.15.1 · uvicorn 0.54.0
 
 ## How to run
-After a reboot, run `colima start` first (the Docker runtime). Then `make up` → `make trust` (once) → `make check` (all phases) or `make check0` … `check3`. Identity admin view: `curl -H "X-Identity-Admin: $IDENTITY_ADMIN_TOKEN" https://identity.localtest.me/admin/vault`. Jira stub UI: https://jira.localtest.me/secure/ViewProfile.jspa (Jira users alice / bob / carol.w). `make ledger` follows token events. `make claude` starts Claude Code trusting the local CA. `make claude ARGS=--continue` resumes the previous session with the same trust. `make help` lists all targets. Credentials are in `.env` (generated by `make env`). Seed users: alice/bob/carol/dave with `SEED_USER_PASSWORD`.
+After a reboot, run `colima start` first (the Docker runtime). Then `make up` → `make trust` (once) → `make check` (all phases) or `make check0` … `check4`. Portal: https://portal.localtest.me (Connected apps, Token ledger). Identity admin view: `curl -H "X-Identity-Admin: $IDENTITY_ADMIN_TOKEN" https://identity.localtest.me/admin/vault`. Jira stub UI: https://jira.localtest.me/secure/ViewProfile.jspa (Jira users alice / bob / carol.w). `make ledger` follows token events. `make claude` starts Claude Code trusting the local CA. `make claude ARGS=--continue` resumes the previous session with the same trust. `make help` lists all targets. Credentials are in `.env` (generated by `make env`). Seed users: alice/bob/carol/dave with `SEED_USER_PASSWORD`.
 
 ## Next up
-- Phase 4: end-to-end through the real gateway and a real portal.
-  - Gateway: Jira tools (`jira___get_myself`, `search_issues`, `get_issue`, `add_comment`) as targets with credential provider `jira-dc`. T7 via gateway-svc → T3 → GetResourceOauth2Token. Consent signalling: URL elicitation (`-32042`) when the client supports it, otherwise an `isError` tool result with the link.
-  - `services/portal`: OIDC login (`portal` client), `/oauth/return` → CompleteResourceTokenAuth (portal-svc), `/connections` (pre-consent), `/ledger` viewer. Persisted ledger table.
-  - mitmproxy token labeler.
-  - Exit: S3, S4 (Claude Code), S5, S8, S15, S18.
+- **S4 (you):** `make claude` (second terminal) → `/mcp` → reconnect `atlassian-playground` if needed → ask "list my Jira issues" → open the link → Jira login (alice) + Allow → "Jira connected" → ask again. Then fill in the S4 table in `docs/clients.md`. Watch: `make ledger`, https://portal.localtest.me/ledger, mitmweb http://localhost:8081.
+- Then phase 5: lifecycle and attacks through the gateway (S6, S7, S10, S11, S13, S16, S17). Backlog: PKCE enforcer, offline_access policy, Claude Code token churn, verify mode (§5.2).
 - **You (any time):** go through `docs/stub-fidelity.md` against the real Jira DC and record the answers.
 - Backlog (phase 5 hardening): enforce PKCE S256 for all clients through a Keycloak client policy. Decide the `offline_access` policy for MCP clients. Investigate Claude Code's token churn (4 tokens in 22 s).

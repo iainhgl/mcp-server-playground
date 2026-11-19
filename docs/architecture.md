@@ -12,7 +12,7 @@ This is the architecture view of [SPEC.md](../SPEC.md). It covers what exists, w
 
 At the end of each phase, update the markers from that phase's traces (see `CLAUDE.md`). Anything observed that contradicts this document is a discovery: log it, then fix the document *and* the spec.
 
-*Last verified: 2026-11-19 (phase 3: identity + vault, `make check3` 36/36, with the script playing gateway and portal. Earlier: phase 2 stub `check2`, phase 1 S2 with Claude Code 2.1.328)*
+*Last verified: 2026-11-19 (phase 4: end to end through the real gateway and portal, `make check4` 30/30, with a scripted MCP client + one scripted browser per user. Earlier: `check3` identity, `check2` stub, S2 with Claude Code 2.1.328). **S4 (Claude Code end to end) pending.**
 
 > **Stub caveat:** a ✅ on a Jira-side step means verified **against the stub**. Whether real Jira DC behaves the same is tracked separately in [stub-fidelity.md](stub-fidelity.md) (F1–F27, all unchecked).
 
@@ -59,8 +59,7 @@ flowchart LR
   classDef verified stroke:#2e7d32,stroke-width:3px
   classDef built stroke:#1565c0,stroke-width:2px,stroke-dasharray:4 2
   classDef designed stroke:#9e9e9e,stroke-width:1px,stroke-dasharray:2 2
-  class MC,BR,KC,GW,JI,ID,PG,OB verified
-  class PO designed
+  class MC,BR,KC,GW,JI,ID,PG,OB,PO verified
 ```
 *Border: solid green = ✅ verified · dashed blue = 🔷 built · dotted grey = ⬜ designed.*
 
@@ -69,9 +68,9 @@ flowchart LR
 | ① | **MCP client** (Claude Code) | Discovers auth, registers itself, runs the user's OAuth login, calls tools | T1, T1r, its DCR registration (T9) | T4/T5, T3, any Jira credential | ✅ S2 |
 | ① | **Browser** | Where every human login and consent happens (H1–H3) | IdP, Jira and portal session cookies | Tokens in URLs beyond one-time `code`/`state` | ✅ H1 (S2) |
 | ② | **Keycloak** (RH SSO) | Authenticates the human. Issues T1 (to MCP clients), T2 (to portal), T7 (to gateway) | Users, password hashes, client registrations, sessions, consents, **realm signing keys** | Anything downstream | ✅ phase 0 + S2 |
-| ③ | **gateway** | OAuth-protected MCP server. Validates T1, asks identity for downstream tokens, calls Jira | T1 / T3 / T4 **in memory, per request only**. JWKS cache | Persisted tokens of any kind. Raw tokens in logs | ✅ inbound (phase 1). ⬜ downstream |
+| ③ | **gateway** | OAuth-protected MCP server. Validates T1, asks identity for downstream tokens, calls Jira | T1 / T3 / T4 **in memory, per request only**. JWKS cache | Persisted tokens of any kind. Raw tokens in logs | ✅ inbound (phase 1). ✅ downstream (`check4`: T7 → T3 → T4 → Jira per call) |
 | ③ | **identity** | Workload identity + token vault + 3LO orchestration (AgentCore Identity's job) | T4/T5 (encrypted at rest), T6, Jira client secret (via OpenBao) | T1 beyond validating it. OpenBao root token | ✅ phase 3 (`check3`) |
-| ③ | **portal** | Hosts the consent **return URL**. Proves who returned so the session can be bound. Shows "Connected apps" | T2 in a server-side session | T4/T5 | ⬜ |
+| ③ | **portal** | Hosts the consent **return URL**. Proves who returned so the session can be bound. Shows "Connected apps" | A signed cookie with user id + name only. T2 for the length of one request | T4/T5. **Any stored token** | ✅ (`check4`) |
 | ④ | **Postgres** | `identity` DB: vault ciphertext, OAuth sessions, ledger. `keycloak` DB | Ciphertext + wrapped data keys, fingerprints | Plaintext downstream tokens | ✅ (`check3`: row holds AES-GCM ciphertext + `vault:v1:` wrapped DEK, T4 not present in plaintext) |
 | ④ | **OpenBao** | ≈ KMS (transit key `vault-dek`) + Secrets Manager (KV) | The key that unwraps every vault row (never exported). Client secrets | — | ✅ (`check3`: datakey/unwrap/encrypt via least-privilege `identity` policy token. Jira secret in KV) |
 | ⑤ | **Jira DC** (stub) | Downstream authorization server *and* resource server | Its own grants per Jira user. Token **hashes** only (SQLite) | Plaintext tokens at rest | ✅ phase 2 (stub) |
@@ -80,7 +79,7 @@ flowchart LR
 - **①→③** Only T1 crosses. The gateway trusts nothing about the caller except a valid T1 (signature, `iss`, `aud`, `exp`). ✅
 - **③→⑤** Only T4 crosses, and only from the gateway (API calls) or identity (token endpoint). T1 never crosses (no passthrough). ✅ for T1: Jira rejects a Keycloak T1 with 401 (`check2`, stub side of S15). ⬜ for T4 sent by the gateway (phase 4)
 - **③ internal** Gateway → identity is service-authenticated (T7, ≈ IAM SigV4) *and* carries the user's T1, so identity knows both *which workload* and *which user*. ✅ (`check3`: no service token → 401. A user T1/T2 as caller → 401. portal-svc calling a gateway-only operation → 403)
-- **①→③ via browser** The return to the portal is the only place where "the user who started consent" is proven to equal "the user who finished it". ⬜
+- **①→③ via browser** The return to the portal is the only place where "the user who started consent" is proven to equal "the user who finished it". ✅ (`check4`: return → fresh OIDC login → `CompleteResourceTokenAuth` with that T2. `check3`: mismatch → 403)
 
 ---
 
@@ -92,7 +91,7 @@ There are exactly three moments where a person interacts, all in the browser. Ev
 |---|---|---|---|---|---|---|
 | **H1** | Keycloak login + consent (`idp.localtest.me`) | MCP client `/mcp` → Authenticate | *I am alice* + *let "Claude Code (atlassian-playground)" use Atlassian tools through the gateway* (scope `mcp:tools`, plus `offline_access`) | T1 + T1r for (alice, that client). Keycloak stores the consent and an **offline session** | T1r dies (offline session revoked/expired, user disabled), client re-registers, consent revoked | ✅ S2 |
 | **H2** | Jira login + consent (`jira.localtest.me/rest/oauth2/latest/authorize`) | Gateway signals "connect Jira" (consent link) | *I am Jira user alice* + *let the gateway app READ Jira as me* | T4 + T5 for (gateway workload, alice, jira-dc). **This is the identity mapping** (SPEC §5) | T5 dies (revoked in Jira, expired, user removed), step-up to WRITE | ✅ Jira side (stub, `check2`: login, consent allow/deny, WRITE step-up, user without a Jira account fails). ⬜ triggered from a gateway consent link (phase 4) |
-| **H3** | Portal return (`portal.localtest.me/oauth/return`) | Redirect from identity after H2 | *The person finishing this consent is still alice* (OIDC login, usually silent through the H1 SSO cookie) | T2, then a `CompleteResourceTokenAuth` call that commits T4/T5 to the vault | Every H2 | 🔷 binding ✅ (`check3`). Portal login **was silent** after a scripted H1 login (no `offline_access`) in the same browser. ⬜ with Claude Code's `offline_access` login and the real portal (phase 4) |
+| **H3** | Portal return (`portal.localtest.me/oauth/return`) | Redirect from identity after H2 | *The person finishing this consent is still alice* (OIDC login, usually silent through the H1 SSO cookie) | T2, then a `CompleteResourceTokenAuth` call that commits T4/T5 to the vault | Every H2 | ✅ real portal (`check4`): the user saw only `login@jira` + `consent@jira`, and **the portal's Keycloak login was silent**. ⬜ with Claude Code (`offline_access` login, real browser): S4 |
 
 H1 is about the **MCP client**: the user trusts a program to act for them at the gateway. H2 is about the **gateway**: the user trusts it to act for them at Jira. They are separate grants, revoked separately, and neither implies the other.
 
@@ -196,17 +195,17 @@ sequenceDiagram
 
 | Step | What happens | Generates | Stored by | Status |
 |---|---|---|---|---|
-| B1 | Tool call needing downstream access | — | — | ⬜ phase 4 |
-| B2 | Gateway authenticates itself (≈ IAM role) | **T7** | Gateway memory | ✅ client-credentials T7 `aud=identity` (`check3`, script as gateway). ⬜ from the real gateway (phase 4) |
+| B1 | Tool call needing downstream access | — | — | ✅ `tool.call` T1 (`check4`) |
+| B2 | Gateway authenticates itself (≈ IAM role) | **T7** | Gateway memory | ✅ real gateway: `service_token.minted` T7, cached (`check4`). mitmweb shows `→ T7` on gateway → identity |
 | B3 | Bind workload + user | **T3** | Gateway memory (one call) | ✅ `wat.minted` T3 `{wl: gateway, sub: iss\|sub}`, 300 s (`check3`) |
 | B4–B5 | Vault miss → start 3LO | **T6** | Postgres `oauth_sessions` (verifier encrypted) | ✅ `vault.miss` → `session.created`. authorizationUrl has the identity callback + S256. Verifier stored `vault:v1:…` (`check3`) |
-| B6 | Consent link to the user through the MCP client | — | — | ⬜ phase 4 (**open:** what Claude Code renders, S4) |
+| B6 | Consent link to the user through the MCP client | — | — | ✅ both signals (`check4`): client without `elicitation.url` → `isError` tool result with the link. Client with it → JSON-RPC **-32042** `{mode: url, url, elicitationId}`. ⬜ what Claude Code shows (S4) |
 | B7 | **H2**: Jira login + consent | Jira grant, Jira session cookie | Jira (SQLite), browser | ✅ stub (`check2`: `oauth.consent_shown` → `oauth.code_issued`, `pkce=true`). Real DC: F2, F4, F25 |
 | B8–B9 | Code exchange at the Jira token endpoint, using the client secret | **T4**, **T5** | Postgres, encrypted, *pending* | ✅ Jira side (`check2`). ✅ identity side (`check3`: `callback.tokens_parked` T4/T5, session `PENDING_BINDING`, parked tokens unusable, callback replay → 400) |
-| B10–B11 | **H3**: return + portal login | **T2** | Portal server-side session | ⬜ phase 4 |
-| B12–B13 | Session binding (anti consent-hijack, S9) | — | — | ✅ (`check3`: bob completing alice's session → 403 `binding.mismatch`, session FAILED, parked tokens wiped, nothing stored. Then alice's own session → `binding.ok`). ⬜ called by the real portal (phase 4) |
+| B10–B11 | **H3**: return + portal login | **T2** | **Nowhere**: request-scoped | ✅ `consent.returned` → `user.login` T2 (silent SSO) (`check4`) |
+| B12–B13 | Session binding (anti consent-hijack, S9) | — | — | ✅ (`check3`: bob completing alice's session → 403 `binding.mismatch`, session FAILED, parked tokens wiped, nothing stored. Then alice's own session → `binding.ok`). ✅ called by the real portal: `binding.requested` → `binding.ok` (`check4`) |
 | B14 | Commit to vault: envelope encryption | DEK (per row), wrapped DEK | Postgres `token_vault`. Key stays in OpenBao | ✅ `vault.store`. AAD binds ciphertext to its row: ciphertext swapped between rows → tag failure → `vault.corrupt_purged` (`check3`) |
-| B15–B16 | Retry → vault hit → call Jira as alice | — | — | ⬜ phase 4 |
+| B15–B16 | Retry → vault hit → call Jira as alice | — | — | ✅ `resource_token.received` T4 → `downstream.call` T4 → Jira `api.call` with the **same fp**. alice sees ALPHA only, bob BETA only (`check4`: S3, S5, S8) |
 
 ### 3.3 Flow C: later calls, refresh and failure
 
@@ -234,7 +233,7 @@ sequenceDiagram
     GW->>ID: C6 report → force refresh once → else re-consent
   end
 ```
-**Jira side ✅ against the stub** (`check2`): C2 rotation (new T4 + T5, old T5 → `invalid_grant`, old T4 valid until expiry), C4 `invalid_grant` after the user revokes or with the `force_invalid_grant` fault, C5/C6 401 for expired or revoked T4. **identity side ✅** (`check3`): C1 `vault.hit`. C2–C3 refresh under the row lock: **10 concurrent requests on a stale T4 → exactly 1 refresh at Jira, 1 `vault.refreshed` + 9 `vault.hit`, all get the same T4**. C4 grant revoked → refresh `invalid_grant` → `vault.purged` → new authorizationUrl. **gateway side ⬜** (C5 call + C6 report-on-401: phases 4–5).
+**Jira side ✅ against the stub** (`check2`): C2 rotation (new T4 + T5, old T5 → `invalid_grant`, old T4 valid until expiry), C4 `invalid_grant` after the user revokes or with the `force_invalid_grant` fault, C5/C6 401 for expired or revoked T4. **identity side ✅** (`check3`): C1 `vault.hit`. C2–C3 refresh under the row lock: **10 concurrent requests on a stale T4 → exactly 1 refresh at Jira, 1 `vault.refreshed` + 9 `vault.hit`, all get the same T4**. C4 grant revoked → refresh `invalid_grant` → `vault.purged` → new authorizationUrl. **gateway side ✅** (`check4`): C5 `downstream.call` T4. **C6:** revoked in Jira → Jira 401 → `downstream.unauthorized` → `GetResourceOauth2Token(forceAuthentication)` → a new consent link to the user (no forced-refresh attempt first). Concurrency through the gateway (S7) ⬜ phase 5.
 
 ---
 
@@ -244,9 +243,9 @@ sequenceDiagram
 |---|---|---|---|---|---|---|---|---|---|---|
 | **T1** | Gateway access token (JWT) | Keycloak (A8) | `aud`=gateway/mcp, `azp`=DCR client, `sub`=user, scope `mcp:tools …` | MCP client, then gateway per request | MCP client credential store | 5 min | T1r (client-side) | `exp`. Signature key rotated | Jira, tool results, logs | ✅ |
 | **T1r** | Refresh token, **offline** for Claude Code | Keycloak (A8) | Client + user + offline session | MCP client | Client store. Keycloak DB (offline session) | Offline session idle (Keycloak default, not yet configured or verified) | Refresh rotation | Offline session revoked, user disabled, consent revoked | Gateway | ✅ minted · ⬜ lifetime |
-| **T2** | Portal token | Keycloak (B11) | `aud`=portal (Keycloak refuses `mcp:tools` to portal ✅) | portal | Portal session store | 5 min | Not needed (one-shot) | `exp` | Gateway (rejected ✅ S14) | ✅ rejection · ✅ accepted by `CompleteResourceTokenAuth` (`aud` = `portal` + `account`), rejected as a caller credential (`check3`) · ⬜ from the real portal |
+| **T2** | Portal token | Keycloak (B11) | `aud`=portal (Keycloak refuses `mcp:tools` to portal ✅) | portal, one request | **None** (request-scoped) | 5 min | Not needed (fresh login per return) | End of request / `exp` | Gateway (rejected ✅ S14) | ✅ (`check4`: minted silently on return, used for binding, never stored) |
 | **T3** | Workload access token | identity (B3) | workload `gateway` + user `iss\|sub` | gateway | none | 5 min | Re-minted per call | `exp` | Client, Jira | ✅ (`check3`) |
-| **T4** | Jira access token (opaque) | Jira (B9, C2) | Jira user + scopes (READ/WRITE) | identity → gateway for one call | Vault, envelope-encrypted | DC ≈ 2 h (stub 60 s in tests) | T5 | `exp`, revoke in Jira, rotation | Client, LLM, logs, Postgres in plaintext | ✅ minted, used, expired, revoked at the stub (`check2`, opaque, 7200 s). ⬜ vault |
+| **T4** | Jira access token (opaque) | Jira (B9, C2) | Jira user + scopes (READ/WRITE) | identity → gateway for one call | Vault, envelope-encrypted | DC ≈ 2 h (stub 60 s in tests) | T5 | `exp`, revoke in Jira, rotation | Client, LLM, logs, Postgres in plaintext | ✅ stub (`check2`) · ✅ vault (`check3`) · ✅ identity → gateway → Jira for one call, never logged (`check4`) |
 | **T5** | Jira refresh token (rotating) | Jira (B9, C2) | Same | identity only | Vault, envelope-encrypted | DC ≈ 90 d | Rotates on every use | Used once, revoked, expired | Everything outside identity | ✅ minted + rotation at the stub (`check2`). ⬜ vault |
 | **T6** | 3LO session (state, PKCE verifier, session_uri) | identity (B5) | (workload, user, provider, return URL) | identity | Postgres (verifier encrypted) | 10 min, single use | — | Completed, expired, failed | — | ✅ IN_PROGRESS → PENDING_BINDING → COMPLETED/FAILED (`check3`) |
 | **T7** | Gateway service token | Keycloak client-credentials (B2) | `aud`=identity | gateway | none (secret in `.env`, later OpenBao) | 5 min | Re-mint | `exp` | — | ✅ gateway-svc + portal-svc tokens (`check3`) |
@@ -275,7 +274,7 @@ sequenceDiagram
 | `identity` Postgres | Vault ciphertext + wrapped DEKs, T6 sessions, ledger fingerprints | **Nothing usable.** Every row needs OpenBao transit to unwrap | ✅ (`check3`: ciphertext + wrapped DEK only. Admin view shows metadata only) |
 | OpenBao | Transit key (no export), KV secrets (T8) | T8 lets them impersonate the *app* at Jira's token endpoint, but they have no user grants. With transit access **plus** the DB, they get every user's Jira tokens | ✅ identity's token can't do anything else (policy `identity`) |
 | Gateway memory | JWKS cache. T1/T3/T4 for in-flight requests | In-flight tokens only | ✅ (nothing persisted) |
-| Ledger (Postgres + stdout) | Fingerprints + non-secret claims | Who did what, when. No credentials | ✅ stdout · ⬜ Postgres |
+| Ledger (Postgres + stdout) | Fingerprints + non-secret claims | Who did what, when. No credentials | ✅ stdout · ✅ `ledger` DB via insert-only `ledger_writer`, read by the portal (`check4`: events from all 4 services, no raw T1 in the DB) |
 
 ---
 
@@ -283,12 +282,12 @@ sequenceDiagram
 
 | # (SPEC §3) | Invariant | Enforced at | Status / evidence |
 |---|---|---|---|
-| 1 | T4/T5 never leave identity, except T4 → gateway for one call | identity API surface. Gateway doesn't persist | 🔷 identity only returns T4 as `accessToken` to an authorised caller with a valid T3. Gateway path ⬜ (phase 4) |
-| 2 | No passthrough: T1 never reaches Jira | Gateway uses only T4 downstream. Jira rejects T1 | ✅ Jira rejects T1 (`check2`) · 🔷 gateway has no downstream path yet · S15 end to end ⬜ |
+| 1 | T4/T5 never leave identity, except T4 → gateway for one call | identity API surface. Gateway doesn't persist | ✅ (`check4`: T4 goes identity → gateway (`resource_token.received`) → Jira only. Tool results carry data, never tokens) |
+| 2 | No passthrough: T1 never reaches Jira | Gateway uses only T4 downstream. Jira rejects T1 | ✅ S15 (`check4`: no T1 fingerprint in any Jira `api.*` event. Every gateway `downstream.call` fp = a Jira `api.call` fp. mitmweb labels every proxied Jira API call `→ T4`) |
 | 3 | Vault key `user_id` only from verified T1 `iss\|sub` | identity `GetWorkloadAccessTokenForJWT` | ✅ identity derives `iss\|sub` only from a verified userToken. The vault key = T3 `sub` (`check3`). Gateway shows the same value ✅ (`whoami.user_id`) |
 | 4 | Consent session completed only by its initiator | `CompleteResourceTokenAuth` (B13) | ✅ S9 (`check3`) |
 | 5 | Gateway rejects wrong `aud` | Gateway JWT authorizer | ✅ `check1` S14 (5 rejection cases with ledger reasons) |
-| 6 | Only fingerprints in logs and ledger | `playground_common.ledger` | ✅ gateway (`check1`) · ✅ Jira stub (`check2`, 16 tokens) · ✅ identity (`check3`, 19 tokens: T1 T2 T3 T4 T7) · ⬜ portal |
+| 6 | Only fingerprints in logs and ledger | `playground_common.ledger` | ✅ gateway (`check1`) · ✅ Jira stub (`check2`, 16 tokens) · ✅ identity (`check3`, 19 tokens: T1 T2 T3 T4 T7) · ✅ all 4 service logs + ledger DB (`check4`). **Access logs were leaking one-time `code`/`state` from callback URLs, so they're now off for identity and portal** |
 | — | MCP session usable only by the principal that created it | MCP SDK session manager | ✅ `check1`: bob on alice's session → 404 |
 
 ---
@@ -325,8 +324,8 @@ flowchart LR
 
 | Question | Resolve in | Why it matters |
 |---|---|---|
-| Is H3 (portal login) silent after an MCP-client login, given Keycloak shows only an *offline* session for that client? | Phase 4 | If not silent, the user logs in twice during consent. **Partly answered:** silent after a non-offline scripted login (`check3`) |
-| What does Claude Code do with a URL-mode elicitation vs an `isError` consent link? | Phase 4 (S4) | That decides B6's design |
+| Is H3 (portal login) silent after an MCP-client login, given Keycloak shows only an *offline* session for that client? | Phase 4 | If not silent, the user logs in twice during consent. **Answered for the scripted flow:** silent through the real portal (`check4`). Claude Code + real browser still to confirm (S4) |
+| What does Claude Code do with a URL-mode elicitation vs an `isError` consent link? | Phase 4 (S4) | That decides B6's design. The gateway now does both (`check4`), so S4 only needs to observe which one Claude Code triggers |
 | Why did one Claude Code login plus one tool call present 4 different T1 fingerprints in about 22 s? | Phase 5 | Token churn, refresh behaviour, and ledger noise |
 | Offline-session lifetime and revocation policy for MCP clients | Phase 5 | Determines how long a stolen device token works (§5 row 1) |
 | Does Claude Code send PKCE and `resource`? (Keycloak enforces neither for DCR clients) | Phase 5 (`make claude-mitm`) | Hardening (PKCE enforcer policy) |

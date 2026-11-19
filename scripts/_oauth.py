@@ -157,6 +157,41 @@ def follow_consent(http: httpx.Client, url: str, user: str, stop_prefix: str, de
     return out
 
 
+def browse(http: httpx.Client, url: str, user: str, jira_user: str | None = None, method: str = "GET",
+           data: dict | None = None) -> dict:
+    """Be the user's browser from `url` until a page with no Keycloak/Jira form: log in at Keycloak
+    (`username`) or Jira (`os_username`) when asked, and approve consent screens (`accept` / `decision`).
+    Returns {'url', 'status', 'text', 'prompts': [...]}. 'prompts' lists the login pages actually shown."""
+    out: dict = {"prompts": []}
+    r = http.request(method, url, data=data)
+    for _ in range(20):
+        while r.is_redirect:
+            r = http.get(urljoin(str(r.url), r.headers["location"]))
+        p = _Forms()
+        p.feed(r.text)
+        form = next((f for f in p.forms if {"username", "os_username", "accept", "decision"} & set(f["fields"])), None)
+        if form is None:
+            return out | {"url": str(r.url), "status": r.status_code, "text": r.text}
+        host = urlparse(str(r.url)).netloc
+        fields = {k: v for k, v in form["fields"].items() if k not in ("accept", "cancel", "decision", "login")}
+        if "username" in form["fields"]:
+            fields |= {"username": user, "password": os.environ["SEED_USER_PASSWORD"]}
+            out["prompts"].append(f"login@{host}")
+        if "os_username" in form["fields"]:
+            if r.status_code == 401:
+                return out | {"url": str(r.url), "status": 401, "text": r.text, "error": "jira login failed"}
+            fields |= {"os_username": jira_user or user, "os_password": os.environ["SEED_USER_PASSWORD"]}
+            out["prompts"].append(f"login@{host}")
+        if "accept" in form["fields"]:
+            fields["accept"] = form["fields"]["accept"] or "Yes"
+            out["prompts"].append(f"consent@{host}")
+        if "decision" in form["fields"]:
+            fields["decision"] = "allow"
+            out["prompts"].append(f"consent@{host}")
+        r = http.post(urljoin(str(r.url), form["action"]), data=fields)
+    return out | {"url": str(r.url), "status": r.status_code, "text": r.text, "error": "too many steps"}
+
+
 def client_credentials(client_id: str, secret: str) -> str:
     r = httpx.post(f"{ISSUER}/protocol/openid-connect/token", verify=CA,
                    data={"grant_type": "client_credentials", "client_id": client_id, "client_secret": secret})

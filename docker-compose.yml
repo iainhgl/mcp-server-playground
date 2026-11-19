@@ -3,6 +3,7 @@
 # Phase 1: gateway (MCP server, JWT authorizer, PRM).
 # Phase 2: jira (Atlassian DC stub: OAuth 2.0 provider + REST v2 subset).
 # Phase 3: identity (+ identity-init): workload identity, token vault, 3LO, session binding.
+# Phase 4: gateway Jira tools, portal, ledger DB (db-init), mitmproxy token labeler.
 
 name: mcp-playground
 
@@ -52,6 +53,20 @@ services:
       test: ["CMD", "pg_isready", "-U", "postgres"]
       interval: 2s
       retries: 30
+    networks: [mesh]
+
+  db-init:
+    # Idempotent DB bootstrap on every `up` (init.sh only runs on a fresh volume): the ledger DB + roles.
+    image: postgres:16.16-alpine
+    restart: "no"
+    command: ["psql", "-v", "ON_ERROR_STOP=1", "-h", "postgres", "-U", "postgres",
+              "-v", "writer_pw=${LEDGER_WRITER_PASSWORD}", "-f", "/bootstrap.sql"]
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./infra/postgres/bootstrap.sql:/bootstrap.sql:ro
+    depends_on:
+      postgres: { condition: service_healthy }
     networks: [mesh]
 
   keycloak:
@@ -131,7 +146,10 @@ services:
       # Outbound (JWKS/discovery) goes via mitmproxy → Caddy. Trust both CAs explicitly.
       CA_FILES: /caddy-data/caddy/pki/authorities/local/root.crt:/mitm/mitmproxy-ca-cert.pem
       HTTPS_PROXY: http://mitmproxy:8080
-      NO_PROXY: localhost,127.0.0.1
+      NO_PROXY: localhost,127.0.0.1,postgres
+      # The gateway's own credential for identity (T7 via Keycloak client gateway-svc, ≈ IAM role).
+      GATEWAY_SVC_CLIENT_SECRET: ${GATEWAY_SVC_CLIENT_SECRET}
+      LEDGER_DATABASE_URL: postgresql://ledger_writer:${LEDGER_WRITER_PASSWORD}@postgres:5432/ledger
     volumes:
       - caddy-data:/caddy-data:ro
       - ./certs/mitmproxy:/mitm:ro
@@ -161,6 +179,7 @@ services:
       CA_FILES: /caddy-data/caddy/pki/authorities/local/root.crt:/mitm/mitmproxy-ca-cert.pem
       HTTPS_PROXY: http://mitmproxy:8080
       NO_PROXY: localhost,127.0.0.1,openbao,postgres
+      LEDGER_DATABASE_URL: postgresql://ledger_writer:${LEDGER_WRITER_PASSWORD}@postgres:5432/ledger
     volumes:
       - caddy-data:/caddy-data:ro
       - ./certs/mitmproxy:/mitm:ro
@@ -189,6 +208,35 @@ services:
     depends_on:
       identity: { condition: service_healthy }
 
+  portal:
+    # Consent return URL (H3), connected apps, ledger viewer (SPEC §6.4).
+    build:
+      context: .
+      dockerfile: services/portal/Dockerfile
+    environment:
+      PUBLIC_URL: https://portal.localtest.me
+      IDP_ISSUER: https://idp.localtest.me/realms/playground
+      IDENTITY_URL: https://identity.localtest.me/identities
+      PORTAL_CLIENT_SECRET: ${PORTAL_CLIENT_SECRET}
+      PORTAL_SVC_CLIENT_SECRET: ${PORTAL_SVC_CLIENT_SECRET}
+      PORTAL_COOKIE_KEY: ${PORTAL_COOKIE_KEY}
+      LEDGER_READ_URL: postgresql://portal:${PG_PORTAL_PASSWORD}@postgres:5432/ledger
+      LEDGER_DATABASE_URL: postgresql://ledger_writer:${LEDGER_WRITER_PASSWORD}@postgres:5432/ledger
+      CA_FILES: /caddy-data/caddy/pki/authorities/local/root.crt:/mitm/mitmproxy-ca-cert.pem
+      HTTPS_PROXY: http://mitmproxy:8080
+      NO_PROXY: localhost,127.0.0.1,postgres
+    volumes:
+      - caddy-data:/caddy-data:ro
+      - ./certs/mitmproxy:/mitm:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/healthz')"]
+      interval: 3s
+      retries: 20
+    depends_on:
+      db-init: { condition: service_completed_successfully }
+      caddy: { condition: service_healthy }
+    networks: [mesh]
+
   jira:
     # Jira DC stub (SPEC §6.5). Persona "jira". The Confluence persona arrives in phase 6.
     build:
@@ -199,6 +247,7 @@ services:
       PORT: "2990"
       BASE_URL: https://jira.localtest.me
       STUB_DB: /data/stub.db
+      LEDGER_DATABASE_URL: postgresql://ledger_writer:${LEDGER_WRITER_PASSWORD}@postgres:5432/ledger
       SEED_USER_PASSWORD: ${SEED_USER_PASSWORD}
       STUB_ADMIN_TOKEN: ${STUB_ADMIN_TOKEN}
       # The incoming application link a Jira admin would create (SPEC §6.5).
@@ -225,8 +274,11 @@ services:
       - --set=web_password=${MITM_WEB_PASSWORD}
       # Upstream is always Caddy; trust its internal CA rather than disabling verification.
       - --set=ssl_verify_upstream_trusted_ca=/caddy-data/caddy/pki/authorities/local/root.crt
+      # Labels T1–T7 on each flow in mitmweb (decodes JWT claims; never stores tokens).
+      - --scripts=/addons/token_labeler.py
     volumes:
       - ./certs/mitmproxy:/home/mitmproxy/.mitmproxy
+      - ./infra/mitmproxy/addons:/addons:ro
       - caddy-data:/caddy-data:ro
     ports:
       - "127.0.0.1:8081:8081"

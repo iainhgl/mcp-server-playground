@@ -1,0 +1,19 @@
+[project]
+name = "portal"
+version = "0.1.0"
+description = "Consent return URL, connected apps and ledger viewer (SPEC §6.4)"
+requires-python = ">=3.12"
+dependencies = [
+    "playground-common",
+    "psycopg[binary]==3.3.9",
+    "python-multipart==0.0.34",
+    "starlette==1.10.0",
+    "uvicorn==0.54.0",
+]
+
+[tool.uv.sources]
+playground-common = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.13,<0.14"]
+build-backend = "uv_build"

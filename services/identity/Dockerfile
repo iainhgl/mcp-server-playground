@@ -10,4 +10,4 @@ RUN uv sync --package identity --no-dev
 
 ENV PATH=/app/.venv/bin:$PATH
 EXPOSE 8001
-CMD ["uvicorn", "identity.app:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers", "--forwarded-allow-ips", "*"]
+CMD ["uvicorn", "identity.app:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers", "--forwarded-allow-ips", "*", "--no-access-log"]
