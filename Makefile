@@ -3,18 +3,18 @@ COMPOSE := docker compose
 CADDY_ROOT := certs/caddy-root.crt
 HOSTS := idp gateway identity portal jira confluence
 
-.PHONY: help env up down nuke ps logs trust untrust hosts check check0 check1 bootstrap claude ledger
+.PHONY: help env up down nuke ps logs trust untrust hosts check check0 check1 check2 bootstrap claude ledger
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
 
-env: ## Create .env with random local secrets (keeps an existing one)
-	@if [ -f .env ]; then echo ".env exists, leaving it alone"; else \
-	  cp .env.example .env; \
-	  for k in POSTGRES_PASSWORD PG_KEYCLOAK_PASSWORD PG_IDENTITY_PASSWORD PG_PORTAL_PASSWORD \
-	           KC_ADMIN_PASSWORD PORTAL_CLIENT_SECRET GATEWAY_SVC_CLIENT_SECRET MITM_WEB_PASSWORD; do \
-	    sed -i '' "s|^$$k=.*|$$k=$$(openssl rand -hex 16)|" .env; \
-	  done; echo "wrote .env"; fi
+RANDOM_KEYS := POSTGRES_PASSWORD PG_KEYCLOAK_PASSWORD PG_IDENTITY_PASSWORD PG_PORTAL_PASSWORD \
+	KC_ADMIN_PASSWORD PORTAL_CLIENT_SECRET GATEWAY_SVC_CLIENT_SECRET MITM_WEB_PASSWORD \
+	STUB_ADMIN_TOKEN JIRA_OAUTH_CLIENT_ID JIRA_OAUTH_CLIENT_SECRET
+
+env: ## Create .env, or add keys new phases need (existing values are kept)
+	@test -f .env || { cp .env.example .env; echo "wrote .env"; }
+	@./scripts/env_sync.sh $(RANDOM_KEYS)
 
 up: env ## Start the stack and wait for the bootstrap jobs
 	@mkdir -p certs/mitmproxy .secrets
@@ -59,13 +59,16 @@ hosts: ## Offline fallback: add *.localtest.me to /etc/hosts (sudo)
 certs-local:
 	@test -f $(CADDY_ROOT) || $(COMPOSE) cp caddy:/data/caddy/pki/authorities/local/root.crt $(CADDY_ROOT)
 
-check: check0 check1 ## Run every phase's exit-criteria checks
+check: check0 check1 check2 ## Run every phase's exit-criteria checks
 
 check0: certs-local ## Phase 0 check: IdP, DCR, PKCE, audience scoping
 	@set -a; source .env; set +a; uv run --script scripts/phase0_check.py
 
 check1: certs-local ## Phase 1 check: gateway 401/PRM discovery, whoami, rejections (S1, S14)
 	@set -a; source .env; set +a; uv run --script scripts/phase1_check.py
+
+check2: certs-local ## Phase 2 check: Jira stub OAuth provider, REST filtering, rotation, faults
+	@set -a; source .env; set +a; uv run --script scripts/phase2_check.py
 
 claude: certs-local ## Start Claude Code trusting the local CA (resume: make claude ARGS=--continue)
 	NODE_EXTRA_CA_CERTS=$(CURDIR)/$(CADDY_ROOT) claude $(ARGS)

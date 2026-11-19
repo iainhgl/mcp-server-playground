@@ -2,7 +2,7 @@
 
 Living status for the build described in [SPEC.md](SPEC.md). The architecture and token-flow view, with per-step verification markers, is in [docs/architecture.md](docs/architecture.md). Update this file in the same commit as the work it describes.
 
-**Current phase:** 2, Stub downstream (not started). Phases 0–1 done
+**Current phase:** 3, Identity + vault (not started). Phases 0–2 done
 **Last updated:** 2026-11-19
 
 ---
@@ -15,7 +15,7 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done · ⏸ blocked
 |---|---|---|---|
 | 0. Edge & IdP | ✅ | Trusted-TLS login to `idp.localtest.me`. DCR via curl works | `make check`: 15/15. Browser login as alice automated over the real login + consent pages with the Caddy CA pinned. Survives `make down && make up`. Manual check done 2026-11-19: `make trust`, then a browser login as alice at https://idp.localtest.me/realms/playground/account over trusted TLS |
 | 1. Gateway shell | ✅ | S1, S2, S14: Claude Code connects, `whoami` shows claims | `make check1`: 25/25 (S1 + S14 + session binding + ledger + invariant 6). S2 done in Claude Code 2.1.328. Observations in `docs/clients.md` |
-| 2. Stub downstream | ⬜ | Manual PKCE flow returns T4. `/search` filtered per user | |
+| 2. Stub downstream | ✅ | Manual PKCE flow returns T4. `/search` filtered per user | `make check2`: 36/36 and repeatable. Jira persona: OAuth provider (PKCE, rotation, both client auth methods, scope hierarchy), login/consent/profile pages, REST v2 subset with Jira-style hiding, PATs, faults. Fidelity assumptions F1–F27 in `docs/stub-fidelity.md` |
 | 3. Identity + vault | ⬜ | Scripted Flow B without gateway. S9 | |
 | 4. End-to-end 3LO | ⬜ | S3, S4, S5, S8, S15, S18 | |
 | 5. Lifecycle & attacks | ⬜ | S6, S7, S10–S13, S16, S17, S19 | |
@@ -38,10 +38,10 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done · ⏸ blocked
 | S9 | ⬜ | |
 | S10 | ⬜ | |
 | S11 | ⬜ | |
-| S12 | ⬜ | |
-| S13 | ⬜ | |
+| S12 | 🟨 | Stub side ✅ (`check2`): dave has no Jira account, so the Jira login fails. End to end (clean tool error, no vault row) waits for phase 4 |
+| S13 | 🟨 | Stub side ✅ (`check2`): user revokes on the profile page → T4 401 `revoked`, T5 `invalid_grant`. Gateway/identity reaction waits for phase 5 |
 | S14 | ✅ | `make check1`: 5 bad tokens → 401, each with a ledger reason (audience ×3, bad signature, untrusted issuer). Keycloak refuses `mcp:tools` to portal. Bob's token on alice's session → 404 |
-| S15 | ⬜ | |
+| S15 | 🟨 | Stub side ✅ (`check2`): Keycloak T1 sent to Jira → 401. Gateway-path check waits for phase 4 |
 | S16 | ⬜ | |
 | S17 | ⬜ | |
 | S18 | ⬜ | |
@@ -55,7 +55,7 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done · ⏸ blocked
 | R1 Network reachability of Jira DC from AgentCore | open | |
 | R2 Gateway 3LO surface to MCP clients | open | |
 | R3 Gateway PRM discovery / multiple issuers | open | |
-| R4 Jira DC OAuth specifics (check by hand on real instance) | open | |
+| R4 Jira DC OAuth specifics (check by hand on real instance) | open | The stub encodes 27 assumptions as a checklist: `docs/stub-fidelity.md` F1–F27. Fill it in on the real instance |
 | R5 Entra + off-the-shelf clients | open | |
 | R6 Identity alignment across RH SSO / Entra / Jira | open | |
 
@@ -67,6 +67,10 @@ Newest first. Record anything learned while building that differs from or adds t
 
 | Date | Phase | Discovery | Spec impact |
 |---|---|---|---|
+| 2026-11-19 | 2 | The stub hides what the user can't see the way Jira does (JQL on a project you can't browse → 400 "does not exist", issue → 404). **The MCP tools will see the same.** Tool errors must not reveal whether a project exists. | §6.5 |
+| 2026-11-19 | 2 | Each consent creates a **separate grant** in the stub, so repeated consents pile up as several "Authorized applications" entries. Real DC behaviour is unknown (F15). Identity should reuse its vault entry rather than re-consent needlessly. | §6.5, stub-fidelity F15 |
+| 2026-11-19 | 2 | After rotation the **old access token stays valid until it expires** (stub assumption F10). So revoking at the vault doesn't kill an issued T4. Only revoking in Jira does. Relevant to S13/S17. | §6.5, stub-fidelity F10 |
+| 2026-11-19 | 2 | Atlassian app link credentials come from `.env` (`JIRA_OAUTH_CLIENT_ID/SECRET`). `make env` now **adds missing keys** to an existing `.env` (`scripts/env_sync.sh`) so later phases can add secrets without a reset. | §6.5 |
 | 2026-11-19 | 1 | **Claude Code requests `offline_access`** as well as `mcp:tools`. Keycloak then creates an **offline session only**: the refresh token outlives SSO idle/max limits and logout. This matters for revocation (S13) and user disable (S17). Production RH SSO/Entra policy on offline tokens for MCP clients should be decided deliberately. | §6.1 (open), §8 S17 |
 | 2026-11-19 | 1 | **Keycloak doesn't enforce PKCE for DCR-registered clients.** The anonymous DCR policies don't set `pkce.code.challenge.method`. Hardening item: add a realm client policy with the `pkce-enforcer` executor (S256) for all clients. | §6.1 (todo) |
 | 2026-11-19 | 1 | Project `.mcp.json` approval is saved in `.claude/settings.local.json`. Choosing "don't use" puts the server in `disabledMcpjsonServers` and **silently hides it from `/mcp`**. Approving it doesn't start auth either: the user has to go to `/mcp` → Authenticate. | docs/clients.md |
@@ -92,8 +96,9 @@ Newest first. Record anything learned while building that differs from or adds t
 Caddy 2.11.8 · Postgres 16.16 · Keycloak 26.8.1 · OpenBao 2.7.1 · mitmproxy 12.3.0 · uv 0.13.8 (python 3.12, trixie) · mcp 2.3.0 · httpx2 2.16.2 · PyJWT 2.15.1 · uvicorn 0.54.0
 
 ## How to run
-After a reboot, run `colima start` first (the Docker runtime). Then `make up` → `make trust` (once) → `make check` (all phases) or `make check0` / `make check1`. `make ledger` follows token events. `make claude` starts Claude Code trusting the local CA. `make claude ARGS=--continue` resumes the previous session with the same trust. `make help` lists all targets. Credentials are in `.env` (generated by `make env`). Seed users: alice/bob/carol/dave with `SEED_USER_PASSWORD`.
+After a reboot, run `colima start` first (the Docker runtime). Then `make up` → `make trust` (once) → `make check` (all phases) or `make check0` / `check1` / `check2`. Jira stub UI: https://jira.localtest.me/secure/ViewProfile.jspa (Jira users alice / bob / carol.w). `make ledger` follows token events. `make claude` starts Claude Code trusting the local CA. `make claude ARGS=--continue` resumes the previous session with the same trust. `make help` lists all targets. Credentials are in `.env` (generated by `make env`). Seed users: alice/bob/carol/dave with `SEED_USER_PASSWORD`.
 
 ## Next up
-- Phase 2: `services/atlassian-stub` (Jira persona). DC OAuth 2.0 provider (`/rest/oauth2/latest/authorize|token`, PKCE, rotating refresh), login/consent pages, REST v2 subset filtered by project permissions, seed data, fault injection.
+- Phase 3: `services/identity`, the AgentCore Identity-shaped API (`CreateWorkloadIdentity`, `CreateOauth2CredentialProvider` with explicit endpoints, `GetWorkloadAccessTokenForJWT/UserId`, `GetResourceOauth2Token`, `/identities/oauth2/callback`, `CompleteResourceTokenAuth`). Postgres schema (vault, sessions, ledger). Envelope encryption via OpenBao transit. Jira client secret moved into OpenBao KV. `gateway-svc` T7 auth. Exit: scripted Flow B without the gateway + S9 (consent hijack blocked).
+- **You (any time):** go through `docs/stub-fidelity.md` against the real Jira DC and record the answers.
 - Backlog (phase 5 hardening): enforce PKCE S256 for all clients through a Keycloak client policy. Decide the `offline_access` policy for MCP clients. Investigate Claude Code's token churn (4 tokens in 22 s).

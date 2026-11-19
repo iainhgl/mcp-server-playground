@@ -1,6 +1,7 @@
 # MCP OAuth playground. See SPEC.md §2 (topology) and §6.6 (infra).
 # Phase 0: TLS edge (Caddy), IdP (Keycloak as RH SSO), Postgres, OpenBao, mitmproxy.
 # Phase 1: gateway (MCP server, JWT authorizer, PRM).
+# Phase 2: jira (Atlassian DC stub: OAuth 2.0 provider + REST v2 subset).
 
 name: mcp-playground
 
@@ -141,6 +142,32 @@ services:
       mitmproxy: { condition: service_started }
     networks: [mesh]
 
+  jira:
+    # Jira DC stub (SPEC §6.5). Persona "jira". The Confluence persona arrives in phase 6.
+    build:
+      context: .
+      dockerfile: services/atlassian-stub/Dockerfile
+    environment:
+      PERSONA: jira
+      PORT: "2990"
+      BASE_URL: https://jira.localtest.me
+      STUB_DB: /data/stub.db
+      SEED_USER_PASSWORD: ${SEED_USER_PASSWORD}
+      STUB_ADMIN_TOKEN: ${STUB_ADMIN_TOKEN}
+      # The incoming application link a Jira admin would create (SPEC §6.5).
+      OAUTH_CLIENT_ID: ${JIRA_OAUTH_CLIENT_ID}
+      OAUTH_CLIENT_SECRET: ${JIRA_OAUTH_CLIENT_SECRET}
+      OAUTH_CLIENT_NAME: MCP Gateway (playground)
+      OAUTH_REDIRECT_URI: https://identity.localtest.me/identities/oauth2/callback
+      OAUTH_SCOPE: WRITE
+    volumes:
+      - jira-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2990/healthz')"]
+      interval: 3s
+      retries: 20
+    networks: [mesh]
+
   mitmproxy:
     image: mitmproxy/mitmproxy:12.3.0
     command:
@@ -168,3 +195,4 @@ volumes:
   pg-data: {}
   bao-data: {}
   uv-cache: {}
+  jira-data: {}

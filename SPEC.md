@@ -312,13 +312,24 @@ create table token_ledger (...);    -- §7
 - This is the one piece you will **also need in AWS**. AgentCore requires you to host the return URL.
 
 ### 6.5 atlassian-stub (`services/atlassian-stub`)
-One codebase that runs in two personas (Jira on :2990, Confluence on :1990). It is the only downstream (D1), so it has to match the DC behaviour that affects auth:
-- **OAuth 2.0 provider (incoming application link):** `GET /rest/oauth2/latest/authorize`, `POST /rest/oauth2/latest/token`. Supports auth code with PKCE (S256), `refresh_token` grant with **rotation**, and `client_secret_post`. Scopes `READ`, `WRITE`, `ADMIN`, `SYSTEM_ADMIN`. Opaque tokens. **No** discovery document, introspection or token exchange.
-- Login page and session cookie. The consent page shows the app name and requested scopes. A user page "Authorized applications" can revoke grants. An admin page registers incoming links (client id/secret, redirect URL), seeded at boot.
-- **REST subset, response shapes copied from DC REST v2:** `/rest/api/2/myself`, `/rest/api/2/search`, `/rest/api/2/issue/{key}`, `/rest/api/2/issue/{key}/comment`; Confluence `/rest/api/content/search`, `/rest/api/content/{id}`. Results are filtered by the token owner's project/space permissions.
-- **Personal Access Tokens** (`Authorization: Bearer <PAT>`) for contrast tests. On DC, both PATs and OAuth tokens use Bearer.
-- **Fault injection, set by env or admin endpoint:** access TTL, refresh TTL, revoke-all, forced 401, forced `invalid_grant`, latency.
-- **Fidelity checklist (`docs/stub-fidelity.md`):** behaviours to confirm by hand on the real instance and record, since it can't be connected (§11 R4). Also the version number. Sanitised JSON samples captured manually can be dropped into `fixtures/` and the stub will serve their shapes.
+One codebase that runs in two personas, `PERSONA=jira` (:2990, built in phase 2) and `confluence` (:1990, phase 6). It is plain Starlette with state in **SQLite on a volume** (`jira-data`), so tokens survive restarts as they would in real Jira. Tokens, codes and PATs are stored **only as SHA-256 hashes**. It is the only downstream (D1), so it has to match the DC behaviour that affects auth:
+- **OAuth 2.0 provider (incoming application link):** `GET/POST /rest/oauth2/latest/authorize`, `POST /rest/oauth2/latest/token`.
+  - Auth code with optional PKCE (S256 only; it can be required per link). Codes are single-use with a 10-minute lifetime.
+  - `refresh_token` grant with **rotation**: the old refresh token dies, and the old access token lives until it expires.
+  - Client auth by `client_secret_post` **or** `client_secret_basic`.
+  - Scopes `READ < WRITE < ADMIN < SYSTEM_ADMIN` are hierarchical, and the link's scope caps what can be requested.
+  - Opaque tokens. The response sets `Cache-Control: no-store`.
+  - **No** discovery document (`/.well-known/*` → 404), introspection or token exchange.
+  - An invalid client or redirect URI gets an error page and **no redirect**.
+  - Each consent creates a separate grant.
+- **The incoming application link** (client id/secret, name, redirect `https://identity.localtest.me/identities/oauth2/callback`, scope `WRITE`) is seeded from `.env` (`JIRA_OAUTH_CLIENT_ID/SECRET`) at boot. That stands in for the admin creating it by hand. Real Jira generates the id and secret.
+- **Pages:** `/login.jsp` (Jira's form field names, `JSESSIONID` cookie), the consent page (app name + scope descriptions, XSRF `atl_token`), and `/secure/ViewProfile.jspa` (**Authorized applications** with Revoke, and **Personal access tokens** with create, shown once). Jira users are a **separate directory** from the IdP: `alice`, `bob`, `carol.w`, and no `dave`.
+- **REST v2 subset, response shapes copied from DC:** `/rest/api/2/myself`, `/rest/api/2/search` (GET + POST, small JQL subset: `project =/in`, `assignee = currentUser()/name/EMPTY`, `status`, `issuetype`, `text/summary ~`, AND, ORDER BY ignored), `/rest/api/2/issue/{key}` (with comments), and `/rest/api/2/issue/{key}/comment` (GET; POST needs `WRITE`). Results are filtered by the token owner's project permissions, and **the stub hides what you can't see the way Jira does**: JQL on a project you can't browse returns 400 *"does not exist"*, and an issue you can't see returns 404. Confluence `/rest/api/content/search`, `/rest/api/content/{id}` come in phase 6.
+- **Errors:** API 401/403/404 use Jira's `{"errorMessages": [...], "errors": {}}`. OAuth errors use RFC 6749 `{"error", "error_description"}`.
+- **Personal Access Tokens** (`Authorization: Bearer <PAT>`) for contrast tests. On DC, both PATs and OAuth tokens use Bearer, and a PAT carries the user's full rights.
+- **Fault injection** (`/_stub/faults` GET/POST/DELETE, `/_stub/revoke-all`, `/_stub/state`; header `X-Stub-Admin: $STUB_ADMIN_TOKEN`): `access_ttl`, `refresh_ttl`, `force_401`, `force_invalid_grant`, `latency_ms`, `refresh_reuse_revokes_grant`.
+- **Ledger events:** `web.login(_failed)`, `oauth.consent_shown/denied`, `oauth.code_issued`, `oauth.token_issued` (T4/T5), `oauth.token_refreshed`, `oauth.token_rejected` (with reason), `oauth.grant_revoked`, `api.call/rejected/forbidden`, `pat.created`, `stub.faults`.
+- **Fidelity checklist ([docs/stub-fidelity.md](docs/stub-fidelity.md), F1–F27):** every assumption above, to confirm by hand on the real instance (§11 R4). Sanitised JSON samples captured manually can be dropped into `fixtures/` to tune the shapes.
 
 ### 6.6 Infra
 - **Postgres 16**: databases `identity`, `keycloak`, `portal`.
@@ -463,3 +474,4 @@ Design changes discovered during the build. The detail behind each change lives 
 | 2026-11-19 | §6, §6.2, §8 | Phase 1: MCP SDK 2.x (`MCPServer`, `httpx2`), uv workspace, path-suffixed PRM + root PRM, `WWW-Authenticate` scope wrapper, DNS-rebinding allowed host, session-to-principal binding. S14 expanded to the cases actually tested |
 | 2026-11-19 | §6.1 | S2 with Claude Code: DCR clients get `offline_access` and Claude Code uses it (offline sessions). PKCE isn't enforced for DCR clients, so a hardening item was added |
 | 2026-11-19 | — | Added `docs/architecture.md`, a living architecture and token-flow document with per-step verification markers |
+| 2026-11-19 | §6.5 | Phase 2: stub built. Details recorded: SQLite + hashed tokens, `client_secret_basic` too, hierarchical scopes, no-redirect errors, grant per consent, Jira-style hiding (JQL 'does not exist', issue 404), app link seeded from `.env`, admin/fault endpoints, ledger events, fidelity checklist F1–F27 |

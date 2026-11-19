@@ -18,3 +18,7 @@ gateway.localtest.me {
 	# check sees gateway.localtest.me. SSE responses are flushed automatically.
 	reverse_proxy gateway:8000
 }
+
+jira.localtest.me {
+	reverse_proxy jira:2990
+}
