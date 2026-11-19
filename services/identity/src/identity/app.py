@@ -256,33 +256,38 @@ async def _vault_get(workload: str, user_id: str, provider: dict, scopes: list[s
         if row["access_expires_at"] > _now() + timedelta(seconds=REFRESH_SKEW):
             ledger.emit(SERVICE, "vault.hit", token=t["access"], label="T4", user_id=user_id, provider=provider["name"])
             return t["access"]
-        if not t["refresh"]:
-            await conn.execute("delete from token_vault where workload_name = %s and user_id = %s "
-                               "and provider_name = %s", key)
-            return None
-        ledger.emit(SERVICE, "vault.refresh_start", token=t["refresh"], label="T5", user_id=user_id)
-        status, resp = await _provider_token_call(provider, {"grant_type": "refresh_token",
-                                                             "refresh_token": t["refresh"]})
-        if status == 200:
-            wrapped, ct = await bao.seal(aad, access=resp["access_token"],
-                                         refresh=resp.get("refresh_token") or t["refresh"])
-            await conn.execute(
-                """update token_vault set access_ct = %s, refresh_ct = %s, wrapped_dek = %s, access_expires_at = %s,
-                   refresh_rotated_at = now(), updated_at = now()
-                   where workload_name = %s and user_id = %s and provider_name = %s""",
-                (ct["access"], ct["refresh"], wrapped, _now() + timedelta(seconds=int(resp.get("expires_in", 3600))),
-                 *key))
-            ledger.emit(SERVICE, "vault.refreshed", token=resp["access_token"], label="T4", user_id=user_id,
-                        rotated=bool(resp.get("refresh_token")))
-            return resp["access_token"]
-        if status in (400, 401) and resp.get("error") == "invalid_grant":
-            await conn.execute("delete from token_vault where workload_name = %s and user_id = %s "
-                               "and provider_name = %s", key)
-            ledger.emit(SERVICE, "vault.purged", user_id=user_id, provider=provider["name"],
-                        reason=f"refresh invalid_grant: {resp.get('error_description')}")
-            return None
-        ledger.emit(SERVICE, "vault.refresh_failed", user_id=user_id, status=status, error=resp.get("error"))
-        raise ApiError(502, "ServiceException", f"provider refresh failed ({status})")
+        return await _refresh_locked(conn, key, provider, t, reason="expired")
+
+
+async def _refresh_locked(conn, key: tuple[str, str, str], provider: dict, t: dict, reason: str) -> str | None:
+    """Refresh with T5 while the caller holds the row lock. New T4, or None if the row was purged
+    (no refresh token / invalid_grant). Raises 502 on other provider failures (the row is kept: T5 may still work)."""
+    user_id = key[1]
+    delete = "delete from token_vault where workload_name = %s and user_id = %s and provider_name = %s"
+    if not t["refresh"]:
+        await conn.execute(delete, key)
+        ledger.emit(SERVICE, "vault.purged", user_id=user_id, provider=provider["name"], reason=f"{reason}, no refresh token")
+        return None
+    ledger.emit(SERVICE, "vault.refresh_start", token=t["refresh"], label="T5", user_id=user_id, reason=reason)
+    status, resp = await _provider_token_call(provider, {"grant_type": "refresh_token", "refresh_token": t["refresh"]})
+    if status == 200:
+        wrapped, ct = await bao.seal(_vault_aad(*key), access=resp["access_token"],
+                                     refresh=resp.get("refresh_token") or t["refresh"])
+        await conn.execute(
+            """update token_vault set access_ct = %s, refresh_ct = %s, wrapped_dek = %s, access_expires_at = %s,
+               refresh_rotated_at = now(), updated_at = now()
+               where workload_name = %s and user_id = %s and provider_name = %s""",
+            (ct["access"], ct["refresh"], wrapped, _now() + timedelta(seconds=int(resp.get("expires_in", 3600))), *key))
+        ledger.emit(SERVICE, "vault.refreshed", token=resp["access_token"], label="T4", user_id=user_id,
+                    rotated=bool(resp.get("refresh_token")), reason=reason)
+        return resp["access_token"]
+    if status in (400, 401) and resp.get("error") == "invalid_grant":
+        await conn.execute(delete, key)
+        ledger.emit(SERVICE, "vault.purged", user_id=user_id, provider=provider["name"],
+                    reason=f"{reason}; refresh invalid_grant: {resp.get('error_description')}")
+        return None
+    ledger.emit(SERVICE, "vault.refresh_failed", user_id=user_id, status=status, error=resp.get("error"))
+    raise ApiError(502, "ServiceException", f"provider refresh failed ({status})")
 
 
 async def _start_session(workload: dict, user_id: str, provider: dict, scopes: list[str], return_url: str) -> dict:
@@ -430,6 +435,42 @@ async def complete_resource_token_auth(request: Request, body: dict) -> dict:
     raise ApiError(403, "AccessDeniedException", "user does not match the user who started this session")
 
 
+# ------------------------------------------------------------------ playground extension: downstream rejected a T4 (C6)
+
+@api
+async def resource_token_rejected(request: Request, body: dict) -> dict:
+    """The gateway reports that the provider returned 401 for a T4 the vault considered valid (e.g. the
+    user revoked the app in Jira). Under the row lock: if the rejected token is still the vaulted one
+    (matched by fingerprint, so a stale report can't kill a newer token), try ONE refresh. invalid_grant
+    → purge the row, so the next GetResourceOauth2Token starts consent and the portal shows "Not connected".
+    No AgentCore equivalent: how AgentCore Gateway reacts to a downstream 401 is an open question (SPEC §11 R2)."""
+    await _caller(request, "x-ResourceTokenRejected")
+    try:
+        workload_name, user_id = wat.verify(body["workloadIdentityToken"])
+    except jwt.PyJWTError as e:
+        raise ApiError(400, "ValidationException", f"invalid workloadIdentityToken: {e.__class__.__name__}") from None
+    provider = await _provider(body["resourceCredentialProviderName"])
+    key = (workload_name, user_id, provider["name"])
+    async with db.pool.connection() as conn, conn.transaction():
+        row = await (await conn.execute(
+            """select * from token_vault where workload_name = %s and user_id = %s and provider_name = %s
+               for update""", key)).fetchone()
+        if row is None:
+            return {"status": "ABSENT"}
+        try:
+            t = await bao.open(_vault_aad(*key), row["wrapped_dek"], access=row["access_ct"], refresh=row["refresh_ct"])
+        except InvalidTag:
+            await conn.execute("delete from token_vault where workload_name = %s and user_id = %s "
+                               "and provider_name = %s", key)
+            return {"status": "PURGED"}
+        if fingerprint(t["access"]) != body.get("accessTokenFingerprint"):
+            return {"status": "SUPERSEDED"}  # someone already replaced it: just ask for the current token
+        ledger.emit(SERVICE, "vault.rejected_downstream", token=t["access"], label="T4", user_id=user_id,
+                    provider=provider["name"])
+        new = await _refresh_locked(conn, key, provider, t, reason="rejected by provider (401)")
+    return {"status": "REFRESHED" if new else "PURGED"}
+
+
 # ------------------------------------------------------------------ playground extensions (portal "Connected apps")
 
 @api
@@ -479,6 +520,7 @@ app = Starlette(lifespan=lifespan, routes=[
     Route("/identities/GetResourceOauth2Token", get_resource_oauth2_token, methods=["POST"]),
     Route("/identities/CompleteResourceTokenAuth", complete_resource_token_auth, methods=["POST"]),
     Route("/identities/oauth2/callback", oauth2_callback, methods=["GET"]),
+    Route("/identities/x-ResourceTokenRejected", resource_token_rejected, methods=["POST"]),
     Route("/identities/x-ListUserConnections", list_user_connections, methods=["POST"]),
     Route("/identities/x-DeleteUserConnection", delete_user_connection, methods=["POST"]),
     Route("/admin/vault", admin_vault, methods=["GET"]),

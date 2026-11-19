@@ -136,10 +136,13 @@ async def _jira(ctx: Context, tool: str, scopes: list[str], method: str, path: s
         message = (f"Jira access for this assistant isn't connected yet (needs {' '.join(c.scopes)}). "
                    f"Open this link, sign in to Jira and approve access, then ask again: {c.url}")
         if _supports_url_elicitation(ctx):
+            # -32042 is one-way: the gateway never learns if the user declined or dismissed the prompt.
+            # So the link also goes in the error message the model sees, and it survives a decline.
             ledger.emit(SERVICE, "consent.signalled", token=c.session_uri, label="T6", mode="url_elicitation")
-            raise UrlElicitationRequiredError([ElicitRequestURLParams(
-                message="Connect your Jira account so the assistant can act as you.",
-                url=c.url, elicitation_id=fingerprint(c.session_uri))]) from None
+            raise UrlElicitationRequiredError(
+                [ElicitRequestURLParams(message="Connect your Jira account so the assistant can act as you.",
+                                        url=c.url, elicitation_id=fingerprint(c.session_uri))],
+                message=message) from None
         ledger.emit(SERVICE, "consent.signalled", token=c.session_uri, label="T6", mode="tool_error")
         raise ToolError(message) from None
     except DownstreamError as e:

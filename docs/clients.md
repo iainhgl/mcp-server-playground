@@ -57,8 +57,8 @@ SPEC §6.7. Record what each real client actually does here (S2, S4, S20).
 | Item | Observed |
 |---|---|
 | Claude Code version | |
-| Declares `elicitation.url`? (ledger `consent.signalled mode=`) | |
-| How the consent link was presented | |
+| Declares `elicitation.url`? (ledger `consent.signalled mode=`) | **Yes**: `mode=url_elicitation` (run 1, 16:52–16:55) |
+| How the consent link was presented | Run 1: elicitation prompt. When declined, the link was lost (fixed: link now also in the error message) |
 | Did the model retry on its own after consent? | |
 | H3: Keycloak login prompt at the portal? | |
 | Result after consent | |

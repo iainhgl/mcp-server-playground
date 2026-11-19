@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx2
-from playground_common import ledger
+from playground_common import fingerprint, ledger
 from playground_common.http import async_client
 
 SERVICE = "gateway"
@@ -84,6 +84,13 @@ class Identity:
                     scopes=scopes, force=force)
         raise ConsentRequired(out["authorizationUrl"], out["sessionUri"], provider, scopes)
 
+    async def token_rejected(self, t3: str, provider: str, t4: str) -> str:
+        """Tell identity the provider rejected this T4. Returns REFRESHED | PURGED | SUPERSEDED | ABSENT."""
+        out = await self._call("x-ResourceTokenRejected", {
+            "workloadIdentityToken": t3, "resourceCredentialProviderName": provider,
+            "accessTokenFingerprint": fingerprint(t4)})
+        return out["status"]
+
 
 class Target:
     """≈ an AgentCore Gateway OpenAPI target with an OAuth (USER_FEDERATION) credential provider."""
@@ -93,15 +100,28 @@ class Target:
         self.provider = cfg["credentialProvider"]["name"]
         self.identity = identity
 
-    async def call(self, t1: str, scopes: list[str], method: str, path: str, **kw) -> httpx2.Response:
-        t3 = await self.identity.workload_token(t1)
-        t4 = await self.identity.resource_token(t3, self.provider, scopes)
+    async def _send(self, t4: str, method: str, path: str, **kw) -> httpx2.Response:
         r = await http.request(method, f"{self.base}{path}", headers={"Authorization": f"Bearer {t4}"}, **kw)
         ledger.emit(SERVICE, "downstream.call", token=t4, label="T4", target=self.name, method=method, path=path,
                     status=r.status_code)
-        if r.status_code == 401:
-            # C6: Jira rejected a token the vault thought was valid (revoked in Jira). The old grant is
-            # useless, so start a fresh consent. (Phase 5 may try one forced refresh first.)
-            ledger.emit(SERVICE, "downstream.unauthorized", token=t4, label="T4", target=self.name)
-            await self.identity.resource_token(t3, self.provider, scopes, force=True)
         return r
+
+    async def call(self, t1: str, scopes: list[str], method: str, path: str, **kw) -> httpx2.Response:
+        t3 = await self.identity.workload_token(t1)
+        t4 = await self.identity.resource_token(t3, self.provider, scopes)
+        r = await self._send(t4, method, path, **kw)
+        if r.status_code != 401:
+            return r
+        # C6: Jira rejected a T4 the vault thought was valid (e.g. the user revoked the app in Jira).
+        # Report it so identity can refresh once, or purge the dead entry (the portal then shows
+        # "Not connected"). Then ask again: either a fresh T4 (retry once) or ConsentRequired.
+        status = await self.identity.token_rejected(t3, self.provider, t4)
+        ledger.emit(SERVICE, "downstream.unauthorized", token=t4, label="T4", target=self.name, vault=status)
+        t4b = await self.identity.resource_token(t3, self.provider, scopes)
+        if t4b != t4:
+            r = await self._send(t4b, method, path, **kw)
+            if r.status_code != 401:
+                return r
+        # Still rejected with whatever the vault holds: only a new consent can help.
+        await self.identity.resource_token(t3, self.provider, scopes, force=True)
+        return r  # unreachable: force=True always raises ConsentRequired

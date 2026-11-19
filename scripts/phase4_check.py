@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 
 import httpx
 from _mcp import McpSession
-from _oauth import CA, ISSUER, Results, browse, browser_authorize, dcr_delete, dcr_register, fp, new_browser
+from _oauth import CA, ISSUER, Results, browse, browser_authorize, claims, dcr_delete, dcr_register, fp, new_browser
 
 PORTAL = "https://portal.localtest.me"
 JIRA = "https://jira.localtest.me"
@@ -108,6 +108,8 @@ def main() -> None:
     elic = (err.get("data") or {}).get("elicitations", [{}])[0]
     R.check(err.get("code") == -32042 and elic.get("mode") == "url" and LINK.match(elic.get("url", "")),
             "client with elicitation.url → JSON-RPC -32042 URLElicitationRequired", str(err)[:120])
+    R.check(LINK.search(err.get("message", "")) is not None,
+            "-32042 error message also carries the link (survives a declined/dismissed prompt)")
     bob.consent(elic["url"])
     rb = mb.call("jira___search_issues")
     R.check(keys(rb) == ["BETA-1", "BETA-2", "BETA-3"], "S8 bob → BETA only")
@@ -164,7 +166,20 @@ def main() -> None:
     httpx.post(f"{JIRA}/_stub/revoke-all", headers=STUB_ADMIN, verify=CA)
     rv = m.call("jira___search_issues")
     R.check(rv.get("isError") and LINK.search(rv["text"]), "C6 revoked in Jira → 401 → new consent link")
-    R.check(any(e["event"] == "downstream.unauthorized" for e in ledger(since)), "ledger: downstream.unauthorized")
+    ev = ledger(since)
+    R.check(any(e["event"] == "downstream.unauthorized" and e.get("vault") == "PURGED" for e in ev),
+            "C6 gateway reported the 401 → identity tried one refresh → invalid_grant → PURGED")
+    alice_sub = claims(alice.t1)["sub"]
+    R.check(psql("identity", f"select count(*) from token_vault where user_id like '%|{alice_sub}'") == "0",
+            "C6 dead token no longer in the vault")
+    R.check("Not connected" in alice.b.get(f"{PORTAL}/connections").text,
+            "C6 portal Connected apps now shows Not connected (not a broken 'Connected')")
+    t0 = datetime.now(UTC).isoformat()
+    rv2 = m.call("jira___search_issues")
+    after = [e for e in ledger(t0) if e["service"] in ("gateway", "identity")]
+    R.check(rv2.get("isError") and LINK.search(rv2["text"]) and any(e["event"] == "vault.miss" for e in after)
+            and not any(e["event"] == "downstream.call" for e in after),
+            "C6 next call: vault.miss → straight to consent, no Jira call (no more 401 loop)")
 
     # ---- invariant 6 across all services (stdout logs + ledger DB)
     logs = subprocess.run(["docker", "compose", "logs", "--no-log-prefix", "gateway", "identity", "jira", "portal"],
@@ -174,6 +189,8 @@ def main() -> None:
     R.check(not leaked, f"no raw T1 in any service log or the ledger DB ({len(raw)} checked)", str(leaked))
     for p in (alice, bob, carol, dave):
         dcr_delete(p.b, p.reg)
+    # Leave no dead tokens behind for manual runs (revoke-all above invalidated every Jira grant).
+    psql("identity", "delete from token_vault")
 
 
 if __name__ == "__main__":
