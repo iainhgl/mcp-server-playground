@@ -88,6 +88,7 @@ def browser_authorize(
     if resource:
         params["resource"] = resource
     r = http.get(f"{ISSUER}/protocol/openid-connect/auth", params=params)
+    prompted = {"_login_prompted": False, "_consent_prompted": False}
     for _ in range(6):  # login → (consent) → redirect to the client's redirect_uri
         while r.is_redirect:
             loc = r.headers["location"]
@@ -104,7 +105,7 @@ def browser_authorize(
                     data["client_secret"] = client_secret
                 tok = httpx.post(f"{ISSUER}/protocol/openid-connect/token", verify=CA, data=data)
                 tok.raise_for_status()
-                return tok.json()
+                return tok.json() | prompted
             r = http.get(urljoin(str(r.url), loc))
         p = _Forms()
         p.feed(r.text)
@@ -114,10 +115,53 @@ def browser_authorize(
         data = {k: v for k, v in form["fields"].items() if k not in ("accept", "cancel")}
         if "username" in form["fields"]:
             data |= {"username": user, "password": os.environ["SEED_USER_PASSWORD"]}
+            prompted["_login_prompted"] = True
         if "accept" in form["fields"]:
             data["accept"] = form["fields"]["accept"] or "Yes"
+            prompted["_consent_prompted"] = True
         r = http.post(urljoin(str(r.url), form["action"]), data=data)
     raise RuntimeError("authorize flow did not complete")
+
+
+def follow_consent(http: httpx.Client, url: str, user: str, stop_prefix: str, decision: str = "allow") -> dict:
+    """Follow a downstream (Atlassian stub) consent link the way the user's browser would: Jira login if
+    needed → consent → redirect to identity's callback (followed) → stop at the first redirect starting
+    with stop_prefix (the portal return URL). Returns {'location', 'login_prompted', 'hops'}."""
+    out = {"location": None, "login_prompted": False, "hops": []}
+    r = http.get(url)
+    for _ in range(10):
+        while r.is_redirect:
+            loc = urljoin(str(r.url), r.headers["location"])
+            out["hops"].append(loc)  # full URLs (may contain one-time codes; never print them)
+            if loc.startswith(stop_prefix):
+                out["location"] = loc
+                return out
+            r = http.get(loc)
+        p = _Forms()
+        p.feed(r.text)
+        if not p.forms:
+            out["error"] = f"stopped at {r.url} HTTP {r.status_code}"
+            return out
+        form = p.forms[0]
+        data = {k: v for k, v in form["fields"].items() if k not in ("decision", "login")}
+        if "os_username" in form["fields"]:
+            if r.status_code == 401:
+                out["error"] = "downstream login failed"
+                return out
+            data |= {"os_username": user, "os_password": os.environ["SEED_USER_PASSWORD"]}
+            out["login_prompted"] = True
+        if "decision" in form["fields"]:
+            data["decision"] = decision
+        r = http.post(urljoin(str(r.url), form["action"]), data=data)
+    out["error"] = "consent flow did not complete"
+    return out
+
+
+def client_credentials(client_id: str, secret: str) -> str:
+    r = httpx.post(f"{ISSUER}/protocol/openid-connect/token", verify=CA,
+                   data={"grant_type": "client_credentials", "client_id": client_id, "client_secret": secret})
+    r.raise_for_status()
+    return r.json()["access_token"]
 
 
 class Results:

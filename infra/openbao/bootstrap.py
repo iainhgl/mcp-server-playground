@@ -80,7 +80,31 @@ def main() -> None:
         c.post("/transit/keys/vault-dek", json={"type": "aes256-gcm96"}).raise_for_status()
         log("created transit key vault-dek")
 
+    # Least-privilege identity for the identity service (≈ its IAM role's KMS/Secrets Manager grants).
+    # It can wrap/unwrap data keys and manage credential-provider secrets, nothing else. It never sees the root token.
+    c.put("/sys/policies/acl/identity", json={"policy": IDENTITY_POLICY}).raise_for_status()
+    token_file = SECRETS_FILE.parent / "identity" / "token"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    existing = token_file.read_text().strip() if token_file.exists() else ""
+    if not existing or httpx.get(f"{BAO}/v1/auth/token/lookup-self", headers={"X-Vault-Token": existing}).is_error:
+        r = c.post("/auth/token/create-orphan", json={"policies": ["identity"], "period": "24h",
+                                                      "display_name": "identity-service"})
+        r.raise_for_status()
+        token_file.write_text(r.json()["auth"]["client_token"])
+        token_file.chmod(0o644)  # the container user must read it; the directory is gitignored and local
+        log("issued identity-service token (policy identity, periodic 24h)")
+
     log("ready")
+
+
+IDENTITY_POLICY = """
+path "transit/datakey/plaintext/vault-dek" { capabilities = ["update"] }
+path "transit/encrypt/vault-dek"           { capabilities = ["update"] }
+path "transit/decrypt/vault-dek"           { capabilities = ["update"] }
+path "secret/data/credential-providers/*"  { capabilities = ["create", "update", "read"] }
+path "auth/token/renew-self"               { capabilities = ["update"] }
+path "auth/token/lookup-self"              { capabilities = ["read"] }
+"""
 
 
 if __name__ == "__main__":

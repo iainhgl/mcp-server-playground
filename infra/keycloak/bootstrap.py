@@ -93,6 +93,21 @@ CLIENTS = [
         "redirectUris": ["https://portal.localtest.me/callback"],
         "webOrigins": ["https://portal.localtest.me"],
         "attributes": {"pkce.code.challenge.method": "S256"},
+        # User tokens (T2) say they're for the portal, so identity can accept them as `userToken`
+        # while the gateway still rejects them.
+        "_mappers": [audience_mapper("audience: portal", "portal")],
+    },
+    {
+        # The portal's *service* credential for calling identity. It's a separate client on purpose:
+        # a user's portal token (T2) must never double as the portal's service identity.
+        "clientId": "portal-svc",
+        "name": "Portal service account",
+        "publicClient": False,
+        "secret": env("PORTAL_SVC_CLIENT_SECRET"),
+        "standardFlowEnabled": False,
+        "directAccessGrantsEnabled": False,
+        "serviceAccountsEnabled": True,
+        "_mappers": [audience_mapper("audience: identity", "identity")],
     },
     {
         # The gateway's own service credential (T7), standing in for IAM.

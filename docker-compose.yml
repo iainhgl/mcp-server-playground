@@ -2,6 +2,7 @@
 # Phase 0: TLS edge (Caddy), IdP (Keycloak as RH SSO), Postgres, OpenBao, mitmproxy.
 # Phase 1: gateway (MCP server, JWT authorizer, PRM).
 # Phase 2: jira (Atlassian DC stub: OAuth 2.0 provider + REST v2 subset).
+# Phase 3: identity (+ identity-init): workload identity, token vault, 3LO, session binding.
 
 name: mcp-playground
 
@@ -86,6 +87,7 @@ services:
       KC_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD}
       SEED_USER_PASSWORD: ${SEED_USER_PASSWORD}
       PORTAL_CLIENT_SECRET: ${PORTAL_CLIENT_SECRET}
+      PORTAL_SVC_CLIENT_SECRET: ${PORTAL_SVC_CLIENT_SECRET}
       GATEWAY_SVC_CLIENT_SECRET: ${GATEWAY_SVC_CLIENT_SECRET}
     volumes:
       - uv-cache:/root/.cache/uv
@@ -141,6 +143,51 @@ services:
       caddy: { condition: service_healthy }
       mitmproxy: { condition: service_started }
     networks: [mesh]
+
+  identity:
+    # ≈ AgentCore Identity (SPEC §6.3): workload identity, token vault, 3LO orchestration.
+    build:
+      context: .
+      dockerfile: services/identity/Dockerfile
+    environment:
+      PUBLIC_URL: https://identity.localtest.me
+      DATABASE_URL: postgresql://identity:${PG_IDENTITY_PASSWORD}@postgres:5432/identity
+      BAO_ADDR: http://openbao:8200
+      BAO_TOKEN_FILE: /secrets/token
+      IDENTITY_ADMIN_TOKEN: ${IDENTITY_ADMIN_TOKEN}
+      IDENTITY_WAT_KEY: ${IDENTITY_WAT_KEY}
+      IDP_DISCOVERY_URL: https://idp.localtest.me/realms/playground/.well-known/openid-configuration
+      # Outbound HTTPS (IdP JWKS, Jira token endpoint) goes via mitmproxy. OpenBao is reached directly.
+      CA_FILES: /caddy-data/caddy/pki/authorities/local/root.crt:/mitm/mitmproxy-ca-cert.pem
+      HTTPS_PROXY: http://mitmproxy:8080
+      NO_PROXY: localhost,127.0.0.1,openbao,postgres
+    volumes:
+      - caddy-data:/caddy-data:ro
+      - ./certs/mitmproxy:/mitm:ro
+      - ./.secrets/identity:/secrets:ro   # only identity's own OpenBao token, never the root token
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz')"]
+      interval: 3s
+      retries: 20
+    depends_on:
+      postgres: { condition: service_healthy }
+      openbao-init: { condition: service_completed_successfully }
+      caddy: { condition: service_healthy }
+    networks: [mesh]
+
+  identity-init:
+    <<: *bootstrap
+    command: ["uv", "run", "--script", "/bootstrap/bootstrap.py"]
+    environment:
+      IDENTITY_URL: http://identity:8001
+      IDENTITY_ADMIN_TOKEN: ${IDENTITY_ADMIN_TOKEN}
+      JIRA_OAUTH_CLIENT_ID: ${JIRA_OAUTH_CLIENT_ID}
+      JIRA_OAUTH_CLIENT_SECRET: ${JIRA_OAUTH_CLIENT_SECRET}
+    volumes:
+      - uv-cache:/root/.cache/uv
+      - ./infra/identity:/bootstrap:ro
+    depends_on:
+      identity: { condition: service_healthy }
 
   jira:
     # Jira DC stub (SPEC §6.5). Persona "jira". The Confluence persona arrives in phase 6.

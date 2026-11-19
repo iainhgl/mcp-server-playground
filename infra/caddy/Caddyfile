@@ -19,6 +19,12 @@ gateway.localtest.me {
 	reverse_proxy gateway:8000
 }
 
+identity.localtest.me {
+	# Public only for the browser-facing OAuth callback; the data plane is also reachable here
+	# (as in AWS, where it's a public regional endpoint protected by auth).
+	reverse_proxy identity:8001
+}
+
 jira.localtest.me {
 	reverse_proxy jira:2990
 }

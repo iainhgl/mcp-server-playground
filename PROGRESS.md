@@ -2,7 +2,7 @@
 
 Living status for the build described in [SPEC.md](SPEC.md). The architecture and token-flow view, with per-step verification markers, is in [docs/architecture.md](docs/architecture.md). Update this file in the same commit as the work it describes.
 
-**Current phase:** 3, Identity + vault (not started). Phases 0–2 done
+**Current phase:** 4, End-to-end 3LO (not started). Phases 0–3 done
 **Last updated:** 2026-11-19
 
 ---
@@ -16,7 +16,7 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done · ⏸ blocked
 | 0. Edge & IdP | ✅ | Trusted-TLS login to `idp.localtest.me`. DCR via curl works | `make check`: 15/15. Browser login as alice automated over the real login + consent pages with the Caddy CA pinned. Survives `make down && make up`. Manual check done 2026-11-19: `make trust`, then a browser login as alice at https://idp.localtest.me/realms/playground/account over trusted TLS |
 | 1. Gateway shell | ✅ | S1, S2, S14: Claude Code connects, `whoami` shows claims | `make check1`: 25/25 (S1 + S14 + session binding + ledger + invariant 6). S2 done in Claude Code 2.1.328. Observations in `docs/clients.md` |
 | 2. Stub downstream | ✅ | Manual PKCE flow returns T4. `/search` filtered per user | `make check2`: 36/36 and repeatable. Jira persona: OAuth provider (PKCE, rotation, both client auth methods, scope hierarchy), login/consent/profile pages, REST v2 subset with Jira-style hiding, PATs, faults. Fidelity assumptions F1–F27 in `docs/stub-fidelity.md` |
-| 3. Identity + vault | ⬜ | Scripted Flow B without gateway. S9 | |
+| 3. Identity + vault | ✅ | Scripted Flow B without gateway. S9 | `make check3`: 36/36, repeatable, passes after `make down && make up`. The script plays gateway (gateway-svc) and portal (portal-svc + T2) |
 | 4. End-to-end 3LO | ⬜ | S3, S4, S5, S8, S15, S18 | |
 | 5. Lifecycle & attacks | ⬜ | S6, S7, S10–S13, S16, S17, S19 | |
 | 6. More clients & sources | ⬜ | S20, Confluence tools | |
@@ -32,20 +32,20 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done · ⏸ blocked
 | S3 | ⬜ | |
 | S4 | ⬜ | |
 | S5 | ⬜ | |
-| S6 | ⬜ | |
-| S7 | ⬜ | |
+| S6 | 🟨 | Identity level ✅ (`check3`): a stale T4 is refreshed transparently and the rotated T5 stored. Through the gateway: phase 4–5 |
+| S7 | 🟨 | Identity level ✅ (`check3`): 10 concurrent requests → exactly 1 refresh at Jira (row lock), 9 vault hits, same T4. Through the gateway: phase 5 |
 | S8 | ⬜ | |
-| S9 | ⬜ | |
+| S9 | ✅ | `check3`: bob's T2 completing alice's session → 403 `binding.mismatch`. Session FAILED, parked T4/T5 wiped, nothing stored, and alice can't reuse the session |
 | S10 | ⬜ | |
 | S11 | ⬜ | |
 | S12 | 🟨 | Stub side ✅ (`check2`): dave has no Jira account, so the Jira login fails. End to end (clean tool error, no vault row) waits for phase 4 |
-| S13 | 🟨 | Stub side ✅ (`check2`): user revokes on the profile page → T4 401 `revoked`, T5 `invalid_grant`. Gateway/identity reaction waits for phase 5 |
+| S13 | 🟨 | Stub ✅ (`check2`). Identity ✅ (`check3`): revoked grant → refresh `invalid_grant` → row purged → new authorizationUrl. Tool-level behaviour: phase 4–5 |
 | S14 | ✅ | `make check1`: 5 bad tokens → 401, each with a ledger reason (audience ×3, bad signature, untrusted issuer). Keycloak refuses `mcp:tools` to portal. Bob's token on alice's session → 404 |
 | S15 | 🟨 | Stub side ✅ (`check2`): Keycloak T1 sent to Jira → 401. Gateway-path check waits for phase 4 |
 | S16 | ⬜ | |
 | S17 | ⬜ | |
 | S18 | ⬜ | |
-| S19 | 🟨 | Gateway part checked in `make check1` (raw T1 absent from gateway logs). Full check comes once all services exist |
+| S19 | 🟨 | Gateway ✅ (`check1`), Jira stub ✅ (`check2`), identity ✅ (`check3`, 19 tokens). Portal: phase 4 |
 | S20 | ⬜ | |
 
 ## Risks to verify (SPEC §11)
@@ -67,6 +67,13 @@ Newest first. Record anything learned while building that differs from or adds t
 
 | Date | Phase | Discovery | Spec impact |
 |---|---|---|---|
+| 2026-11-19 | 3 | **The portal needs two Keycloak identities.** A user-login client (`portal`, T2 `aud=portal`) and a separate service client (`portal-svc`) for calling identity. With one client, a user's T2 would also carry the identity audience and could pass as the portal service. In AWS the portal's IAM role does this job. | §6.1, §6.3 |
+| 2026-11-19 | 3 | **Portal login (H3) was silent** after a scripted MCP login (no `offline_access`) in the same browser, because the Keycloak SSO cookie carried over. Still to confirm with Claude Code's `offline_access` login (phase 4). | architecture §2 |
+| 2026-11-19 | 3 | Keycloak puts `account` in `aud` on service, portal and user tokens (default roles). It's harmless because every check names its own audience, but tokens are broader than they look. | §6.1 |
+| 2026-11-19 | 3 | **AAD matters:** without binding the ciphertext to `workload\|user\|provider`, anyone with DB write access could copy alice's encrypted token into bob's row and identity would hand it to bob. With AAD, the tag check fails and the row is purged (`check3`). AgentCore's vault internals aren't visible, so this is a design principle to ask AWS about, not something we can verify there. | §6.3 |
+| 2026-11-19 | 3 | Parked tokens (between callback and binding) are a distinct state, `PENDING_BINDING`. Without it, the callback would have to write to the vault for whoever *started* the flow, before knowing who finished it. That is exactly the consent-hijack hole S9 tests. | §6.3 |
+| 2026-11-19 | 3 | Scope comparison needs provider knowledge (Jira WRITE ⊇ READ). Without it, a WRITE grant would force re-consent for READ. Added `x-playground.scopeHierarchy`. How AgentCore keys or compares scopes in its vault is an open question for R2/R4. | §6.3, §11 |
+| 2026-11-19 | 3 | Identity reaches OpenBao directly, bypassing mitmproxy, because transit responses contain plaintext data keys. Its traffic to Jira's token endpoint **does** go through mitmproxy, so **mitmweb shows raw T4/T5 in token responses**. That's deliberate: it's the "attacker on the wire" view, kept local. | §6.3, §7 |
 | 2026-11-19 | 2 | The stub hides what the user can't see the way Jira does (JQL on a project you can't browse → 400 "does not exist", issue → 404). **The MCP tools will see the same.** Tool errors must not reveal whether a project exists. | §6.5 |
 | 2026-11-19 | 2 | Each consent creates a **separate grant** in the stub, so repeated consents pile up as several "Authorized applications" entries. Real DC behaviour is unknown (F15). Identity should reuse its vault entry rather than re-consent needlessly. | §6.5, stub-fidelity F15 |
 | 2026-11-19 | 2 | After rotation the **old access token stays valid until it expires** (stub assumption F10). So revoking at the vault doesn't kill an issued T4. Only revoking in Jira does. Relevant to S13/S17. | §6.5, stub-fidelity F10 |
@@ -93,12 +100,16 @@ Newest first. Record anything learned while building that differs from or adds t
 | 2026-11-19 | 0 | Runtime is **Colima** (4 CPU / 8 GB) with the Homebrew docker CLI + compose plugin (`~/.docker/config.json` `cliPluginsExtraDirs`). Binding host port 443 works without sudo. | — |
 
 ## Pinned versions
-Caddy 2.11.8 · Postgres 16.16 · Keycloak 26.8.1 · OpenBao 2.7.1 · mitmproxy 12.3.0 · uv 0.13.8 (python 3.12, trixie) · mcp 2.3.0 · httpx2 2.16.2 · PyJWT 2.15.1 · uvicorn 0.54.0
+Caddy 2.11.8 · Postgres 16.16 · psycopg 3.3.9 · cryptography 50.0.2 · Keycloak 26.8.1 · OpenBao 2.7.1 · mitmproxy 12.3.0 · uv 0.13.8 (python 3.12, trixie) · mcp 2.3.0 · httpx2 2.16.2 · PyJWT 2.15.1 · uvicorn 0.54.0
 
 ## How to run
-After a reboot, run `colima start` first (the Docker runtime). Then `make up` → `make trust` (once) → `make check` (all phases) or `make check0` / `check1` / `check2`. Jira stub UI: https://jira.localtest.me/secure/ViewProfile.jspa (Jira users alice / bob / carol.w). `make ledger` follows token events. `make claude` starts Claude Code trusting the local CA. `make claude ARGS=--continue` resumes the previous session with the same trust. `make help` lists all targets. Credentials are in `.env` (generated by `make env`). Seed users: alice/bob/carol/dave with `SEED_USER_PASSWORD`.
+After a reboot, run `colima start` first (the Docker runtime). Then `make up` → `make trust` (once) → `make check` (all phases) or `make check0` … `check3`. Identity admin view: `curl -H "X-Identity-Admin: $IDENTITY_ADMIN_TOKEN" https://identity.localtest.me/admin/vault`. Jira stub UI: https://jira.localtest.me/secure/ViewProfile.jspa (Jira users alice / bob / carol.w). `make ledger` follows token events. `make claude` starts Claude Code trusting the local CA. `make claude ARGS=--continue` resumes the previous session with the same trust. `make help` lists all targets. Credentials are in `.env` (generated by `make env`). Seed users: alice/bob/carol/dave with `SEED_USER_PASSWORD`.
 
 ## Next up
-- Phase 3: `services/identity`, the AgentCore Identity-shaped API (`CreateWorkloadIdentity`, `CreateOauth2CredentialProvider` with explicit endpoints, `GetWorkloadAccessTokenForJWT/UserId`, `GetResourceOauth2Token`, `/identities/oauth2/callback`, `CompleteResourceTokenAuth`). Postgres schema (vault, sessions, ledger). Envelope encryption via OpenBao transit. Jira client secret moved into OpenBao KV. `gateway-svc` T7 auth. Exit: scripted Flow B without the gateway + S9 (consent hijack blocked).
+- Phase 4: end-to-end through the real gateway and a real portal.
+  - Gateway: Jira tools (`jira___get_myself`, `search_issues`, `get_issue`, `add_comment`) as targets with credential provider `jira-dc`. T7 via gateway-svc → T3 → GetResourceOauth2Token. Consent signalling: URL elicitation (`-32042`) when the client supports it, otherwise an `isError` tool result with the link.
+  - `services/portal`: OIDC login (`portal` client), `/oauth/return` → CompleteResourceTokenAuth (portal-svc), `/connections` (pre-consent), `/ledger` viewer. Persisted ledger table.
+  - mitmproxy token labeler.
+  - Exit: S3, S4 (Claude Code), S5, S8, S15, S18.
 - **You (any time):** go through `docs/stub-fidelity.md` against the real Jira DC and record the answers.
 - Backlog (phase 5 hardening): enforce PKCE S256 for all clients through a Keycloak client policy. Decide the `offline_access` policy for MCP clients. Investigate Claude Code's token churn (4 tokens in 22 s).

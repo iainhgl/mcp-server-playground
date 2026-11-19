@@ -98,7 +98,7 @@ This table is the core of the exercise. Every token in the system appears here, 
 | **T4** | Jira access token | Jira DC (stub) | Jira user who consented, scopes `READ`/`WRITE` | identity token vault **only** | DC default ≈2 h (stub: configurable, 60 s for tests) | Postgres, envelope-encrypted |
 | **T5** | Jira refresh token (rotating) | Jira DC (stub) | Same | identity token vault **only** | DC default ≈90 d | Postgres, envelope-encrypted |
 | **T6** | 3LO auth session (`state`, PKCE verifier, `session_uri`) | identity | (workload, user, provider, return URL) | identity | 10 min, single use | Postgres |
-| **T7** | Gateway service credential | Keycloak client credentials | `aud=identity` | gateway | 5 min | in memory (client secret in OpenBao) |
+| **T7** | Gateway service credential (and the portal's equivalent from `portal-svc`) | Keycloak client credentials | `aud=identity` | gateway / portal | 5 min | in memory (client secret in `.env` today) |
 | **T8** | Jira OAuth client_id/secret ("credential provider") | Jira admin (incoming app link) | — | identity | static | OpenBao KV (≈ Secrets Manager) |
 | **T9** | DCR registration (client_id, `registration_access_token`) | Keycloak | MCP client instance | MCP client | until deleted | client-local + Keycloak |
 
@@ -228,8 +228,10 @@ Pinned to Keycloak **26.8.1**. The realm is configured by an idempotent script t
   - Allowed Client Scopes includes `mcp:tools`.
   - Consent Required stays on (realistic).
 - Pre-registered public client `mcp-public` (PKCE, loopback redirects) as the fallback for clients/IdPs without DCR. **This is the path Entra will force later.**
-- `portal`: confidential, standard flow, redirect `https://portal.localtest.me/callback`.
+- `portal`: confidential, standard flow, redirect `https://portal.localtest.me/callback`. An audience mapper sets **`aud=portal`** on user tokens (T2).
+- `portal-svc`: confidential, client credentials only, audience `identity`. This is the portal's **service** credential for identity, kept separate so that a user's T2 can never act as the portal service.
 - `gateway-svc`: confidential, client credentials only, audience `identity` (T7).
+- Keycloak also adds `account` to `aud` on these tokens (default roles). That's harmless because every check names its own audience.
 - `identity`: bearer-only resource.
 - **RFC 8707 gap (confirmed in 26.8.1):** the AS metadata does not advertise resource indicators, and the `resource` parameter is accepted but has no effect. Audience comes only from the `mcp:tools` scope mapper. Entra and Cognito differ here too; record them in `docs/aws-mapping.md`.
 - **Discovery:** 26.8.1 natively serves the RFC 8414 path-inserted URL that MCP clients try first (`/.well-known/oauth-authorization-server/realms/playground`), but not the path-inserted `openid-configuration` form. No proxy rewrite is needed. **Check the production RH SSO version**: an older build may need a rewrite at its proxy.
@@ -270,40 +272,43 @@ Pinned to Keycloak **26.8.1**. The realm is configured by an idempotent script t
 - **Must not:** cache T4 beyond a single call, log T4, or accept tool args that influence user identity.
 
 ### 6.3 identity (`services/identity`)
-The API names and fields mirror AgentCore Identity. The transport is JSON over HTTPS, authenticated with T7 (gateway) or the portal's client credentials.
+The operation names and request/response fields mirror AgentCore Identity. The transport (`POST /identities/<Operation>`, JSON) is ours. Starlette + psycopg (Postgres) + httpx2, with the schema created on startup. Three planes:
 
-| Endpoint | Purpose |
-|---|---|
-| `POST /identities/CreateWorkloadIdentity` | Register `gateway` (plus allowed return URLs: `portal.localtest.me/oauth/return`) |
-| `POST /identities/CreateOauth2CredentialProvider` | Register `jira-dc` / `confluence-dc`: explicit `authorizationServerMetadata` (issuer, authorizationEndpoint, tokenEndpoint), since **Jira DC has no `.well-known` discovery**. Client secret goes to OpenBao KV. |
-| `POST /identities/GetWorkloadAccessTokenForJWT` | Validate the user JWT (T1) and mint T3 |
-| `POST /identities/GetWorkloadAccessTokenForUserId` | Same, with an explicit userId (portal pre-consent; mirrors the AWS API) |
-| `POST /identities/GetResourceOauth2Token` | Vault lookup/refresh, or start 3LO and return `{authorizationUrl, sessionUri}`. Supports `forceAuthentication` and scope step-up. |
-| `GET  /identities/oauth2/callback` | Downstream redirect target. Exchanges the code and parks the tokens as PENDING on the session. |
-| `POST /identities/CompleteResourceTokenAuth` | Session binding: checks the user in `userIdentifier.userToken` (T2) matches the session user, then commits to the vault |
-| `GET/DELETE /admin/vault` | Debug: list entries (metadata + fingerprints only) and revoke |
+| Plane | Auth | Who |
+|---|---|---|
+| **control** | `X-Identity-Admin: $IDENTITY_ADMIN_TOKEN` (≈ IAM admin on `bedrock-agentcore-control`) | `identity-init` bootstrap job (≈ console/Terraform) |
+| **data** | `Bearer` Keycloak **service** token, `aud=identity`, plus a per-operation caller ACL (≈ IAM policy) | `gateway-svc` (T7), `portal-svc` |
+| **browser** | the OAuth `state` (single use, stored as a SHA-256 hash) | the user's browser returning from Jira |
 
-For identity, "same user" means the same `iss|sub`. T1 and T2 have different audiences but the same issuer and subject, so identity validates `userToken` against an allowlist of audiences (`gateway/mcp`, `portal`).
+| Endpoint | Callers | Purpose |
+|---|---|---|
+| `POST /identities/CreateWorkloadIdentity` | admin | Register `gateway` with `allowedResourceOauth2ReturnUrls: [https://portal.localtest.me/oauth/return]` |
+| `POST /identities/CreateOauth2CredentialProvider` | admin | `credentialProviderVendor: CustomOauth2`, with explicit `oauthDiscovery.authorizationServerMetadata` (**Jira DC has no discovery**). The client secret goes to OpenBao KV `secret/credential-providers/<name>`. Returns `callbackUrl` (to register in Jira). Playground extension `x-playground.scopeHierarchy` |
+| `POST /identities/GetWorkloadAccessTokenForJWT` | gateway-svc | Validate `userToken` (T1) against the IdP, then mint **T3** (HS256 JWT `{wl, sub=iss\|sub}`, 5 min) |
+| `POST /identities/GetWorkloadAccessTokenForUserId` | portal-svc | Same, with an explicit `userId` vouched for by the trusted caller (portal pre-consent) |
+| `POST /identities/GetResourceOauth2Token` | gateway-svc, portal-svc | Verify T3 → check the return URL is on the workload allowlist → vault lookup, or refresh **under `SELECT … FOR UPDATE`**, or start 3LO → `{accessToken}` or `{authorizationUrl, sessionUri, sessionStatus: IN_PROGRESS}`. `forceAuthentication` skips the vault. `oauth2Flow` must be `USER_FEDERATION` |
+| `GET  /identities/oauth2/callback` | browser | `state` → session (`FOR UPDATE`). Exchange the code with the PKCE verifier + client secret (from OpenBao), park T4/T5 encrypted, session `PENDING_BINDING`, then 302 → `returnUrl?session_id=<sessionUri>`. On error: session `FAILED`, then 302 with `&error=` |
+| `POST /identities/CompleteResourceTokenAuth` | portal-svc | Validate `userIdentifier.userToken` (T2, or T1) or take `userId`. **If `iss\|sub` ≠ the session's starter, the session is `FAILED` and the parked tokens are wiped** (403). Otherwise re-encrypt for the vault row, upsert, and mark the session `COMPLETED` |
+| `GET /admin/vault` | admin | Debug: vault metadata only (no ciphertext) |
 
-**Vault schema (Postgres):**
+- **"Same user"** means the same `iss|sub`. `userToken` is accepted with `aud` ∈ {`https://gateway.localtest.me/mcp`, `portal`}. A user token is **never** accepted as a caller credential (and the reverse), because service clients (`gateway-svc`, `portal-svc`) are separate Keycloak clients with no user flows.
+- **Session lifecycle (T6):** `IN_PROGRESS` → (callback) `PENDING_BINDING` → (binding) `COMPLETED` | `FAILED` (error, expiry after 10 min, binding mismatch). A session is single-use, and so is its callback (replay → 400). Tokens parked on a session are **not** usable until bound.
+- **Envelope encryption:** one data key per row from OpenBao `transit/datakey/plaintext/vault-dek`, then AES-256-GCM. The AAD is `vault|workload|user|provider` (or `pending|<sessionUri>` while parked), so **ciphertext moved to another row fails its tag check, and that row is purged**. The PKCE verifier is encrypted directly with `transit/encrypt`. OpenBao is reached directly, not through mitmproxy, so plaintext data keys never show up in mitmweb.
+- **OpenBao access:** a periodic (24h) token with policy `identity`: datakey/encrypt/decrypt on `vault-dek`, CRU on `secret/data/credential-providers/*`, renew/lookup-self. It's issued by `openbao-init` into `.secrets/identity/token`, which is the only secret identity mounts (never the root token). Identity renews it on startup.
+- **Refresh:** if T4 is within 30 s of expiry, refresh with T5 while holding the row lock, store the rotated pair atomically, and return it. `invalid_grant` → delete the row → caller gets a new `authorizationUrl`. Other failures → 502.
+- **Scopes:** with a provider `scopeHierarchy`, a higher vaulted scope covers lower requests (WRITE covers READ). Otherwise it's set inclusion. How AgentCore compares scopes is unverified (§11).
+- **Errors:** AWS-style `{"__type": "ValidationException" | "AccessDeniedException" | "ResourceNotFoundException" | "UnauthorizedException" | "ServiceException", "message"}`.
+
+**Postgres schema** (`services/identity/src/identity/db.py`): `workload_identities`, `credential_providers` (secret *path* only), `oauth_sessions` (T6: `state_hash`, encrypted verifier, status, parked ciphertext), `token_vault`:
 ```sql
 create table token_vault (
-  workload_name   text not null,
-  user_id         text not null,          -- iss|sub
-  provider_name   text not null,
-  scopes          text[] not null,
-  downstream_user text,                   -- from /myself, if verified
-  access_ct       bytea not null,         -- AES-256-GCM ciphertext
-  refresh_ct      bytea,
-  wrapped_dek     text not null,          -- OpenBao transit-wrapped data key (≈ KMS GenerateDataKey)
-  access_expires_at  timestamptz not null,
-  refresh_rotated_at timestamptz,
-  created_at timestamptz default now(),
-  primary key (workload_name, user_id, provider_name)
-);
-create table oauth_sessions (...);  -- T6: state, pkce_verifier_ct, user_id, return_url, status, expires_at
-create table token_ledger (...);    -- §7
+  workload_name text, user_id text /* iss|sub from a VERIFIED token */, provider_name text,
+  scopes text[], downstream_user text,
+  access_ct bytea /* nonce||AES-GCM(T4) */, refresh_ct bytea, wrapped_dek text /* vault:v1:… */,
+  access_expires_at timestamptz, refresh_rotated_at timestamptz, created_at, updated_at,
+  primary key (workload_name, user_id, provider_name));
 ```
+The persisted ledger table (§7) comes with the portal viewer (phase 4).
 
 ### 6.4 portal (`services/portal`)
 - `/oauth/return`: OIDC login (silent if a Keycloak session exists), then `CompleteResourceTokenAuth`, then a "Connected, return to your assistant" page.
@@ -475,3 +480,4 @@ Design changes discovered during the build. The detail behind each change lives 
 | 2026-11-19 | §6.1 | S2 with Claude Code: DCR clients get `offline_access` and Claude Code uses it (offline sessions). PKCE isn't enforced for DCR clients, so a hardening item was added |
 | 2026-11-19 | — | Added `docs/architecture.md`, a living architecture and token-flow document with per-step verification markers |
 | 2026-11-19 | §6.5 | Phase 2: stub built. Details recorded: SQLite + hashed tokens, `client_secret_basic` too, hierarchical scopes, no-redirect errors, grant per consent, Jira-style hiding (JQL 'does not exist', issue 404), app link seeded from `.env`, admin/fault endpoints, ledger events, fidelity checklist F1–F27 |
+| 2026-11-19 | §3, §6.1, §6.3 | Phase 3: identity built. Three planes (admin key / service tokens + caller ACL / browser state). New Keycloak client `portal-svc` + `aud=portal` on T2. Session lifecycle incl. PENDING_BINDING. AAD-bound envelope encryption. Least-privilege OpenBao token. Refresh under row lock. `scopeHierarchy` extension. AWS-style errors |

@@ -3,27 +3,28 @@ COMPOSE := docker compose
 CADDY_ROOT := certs/caddy-root.crt
 HOSTS := idp gateway identity portal jira confluence
 
-.PHONY: help env up down nuke ps logs trust untrust hosts check check0 check1 check2 bootstrap claude ledger
+.PHONY: help env up down nuke ps logs trust untrust hosts check check0 check1 check2 check3 bootstrap claude ledger
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
 
 RANDOM_KEYS := POSTGRES_PASSWORD PG_KEYCLOAK_PASSWORD PG_IDENTITY_PASSWORD PG_PORTAL_PASSWORD \
 	KC_ADMIN_PASSWORD PORTAL_CLIENT_SECRET GATEWAY_SVC_CLIENT_SECRET MITM_WEB_PASSWORD \
-	STUB_ADMIN_TOKEN JIRA_OAUTH_CLIENT_ID JIRA_OAUTH_CLIENT_SECRET
+	STUB_ADMIN_TOKEN JIRA_OAUTH_CLIENT_ID JIRA_OAUTH_CLIENT_SECRET \
+	IDENTITY_ADMIN_TOKEN IDENTITY_WAT_KEY PORTAL_SVC_CLIENT_SECRET
 
 env: ## Create .env, or add keys new phases need (existing values are kept)
 	@test -f .env || { cp .env.example .env; echo "wrote .env"; }
 	@./scripts/env_sync.sh $(RANDOM_KEYS)
 
 up: env ## Start the stack and wait for the bootstrap jobs
-	@mkdir -p certs/mitmproxy .secrets
-	$(COMPOSE) up -d
+	@mkdir -p certs/mitmproxy .secrets/identity
+	$(COMPOSE) up -d --build
 	@$(MAKE) --no-print-directory bootstrap
 
-bootstrap: ## Wait for (or re-run) the Keycloak and OpenBao bootstrap jobs
-	@$(COMPOSE) up -d keycloak-init openbao-init >/dev/null 2>&1
-	@for s in openbao-init keycloak-init; do \
+bootstrap: ## Wait for (or re-run) the OpenBao, Keycloak and identity bootstrap jobs
+	@$(COMPOSE) up -d keycloak-init openbao-init identity-init >/dev/null 2>&1
+	@for s in openbao-init keycloak-init identity-init; do \
 	  $(COMPOSE) wait $$s >/dev/null 2>&1; \
 	  code=$$(docker inspect -f '{{.State.ExitCode}}' $$($(COMPOSE) ps -aq $$s)); \
 	  if [ "$$code" != "0" ]; then echo "✗ $$s failed (exit $$code)"; \
@@ -59,7 +60,7 @@ hosts: ## Offline fallback: add *.localtest.me to /etc/hosts (sudo)
 certs-local:
 	@test -f $(CADDY_ROOT) || $(COMPOSE) cp caddy:/data/caddy/pki/authorities/local/root.crt $(CADDY_ROOT)
 
-check: check0 check1 check2 ## Run every phase's exit-criteria checks
+check: check0 check1 check2 check3 ## Run every phase's exit-criteria checks
 
 check0: certs-local ## Phase 0 check: IdP, DCR, PKCE, audience scoping
 	@set -a; source .env; set +a; uv run --script scripts/phase0_check.py
@@ -69,6 +70,9 @@ check1: certs-local ## Phase 1 check: gateway 401/PRM discovery, whoami, rejecti
 
 check2: certs-local ## Phase 2 check: Jira stub OAuth provider, REST filtering, rotation, faults
 	@set -a; source .env; set +a; uv run --script scripts/phase2_check.py
+
+check3: certs-local ## Phase 3 check: identity, token vault, 3LO consent, session binding (S9)
+	@set -a; source .env; set +a; uv run --script scripts/phase3_check.py
 
 claude: certs-local ## Start Claude Code trusting the local CA (resume: make claude ARGS=--continue)
 	NODE_EXTRA_CA_CERTS=$(CURDIR)/$(CADDY_ROOT) claude $(ARGS)
