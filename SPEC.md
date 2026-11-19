@@ -20,6 +20,8 @@ The production target is **Amazon Bedrock AgentCore Gateway + AgentCore Identity
 
 ---
 
+> The architecture view (components, login/consent moments, step-by-step token flows with verification status) is in [docs/architecture.md](docs/architecture.md).
+
 ## 1. What we are modelling
 
 ### 1.1 AWS target → local stand-in
@@ -460,3 +462,4 @@ Design changes discovered during the build. The detail behind each change lives 
 | 2026-11-19 | §6.1, §6.6, §9 | Phase 0: Keycloak configured by an idempotent bootstrap script instead of a realm import. `mcp:tools` is a realm *optional* scope (was: default) so non-MCP clients can't get the gateway audience. RFC 8707 and discovery behaviour of 26.8.1 recorded. OpenBao runs in server mode with Raft (was: dev mode) |
 | 2026-11-19 | §6, §6.2, §8 | Phase 1: MCP SDK 2.x (`MCPServer`, `httpx2`), uv workspace, path-suffixed PRM + root PRM, `WWW-Authenticate` scope wrapper, DNS-rebinding allowed host, session-to-principal binding. S14 expanded to the cases actually tested |
 | 2026-11-19 | §6.1 | S2 with Claude Code: DCR clients get `offline_access` and Claude Code uses it (offline sessions). PKCE isn't enforced for DCR clients, so a hardening item was added |
+| 2026-11-19 | — | Added `docs/architecture.md`, a living architecture and token-flow document with per-step verification markers |

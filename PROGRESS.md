@@ -1,6 +1,6 @@
 # Progress
 
-Living status for the build described in [SPEC.md](SPEC.md). Update this file in the same commit as the work it describes.
+Living status for the build described in [SPEC.md](SPEC.md). The architecture and token-flow view, with per-step verification markers, is in [docs/architecture.md](docs/architecture.md). Update this file in the same commit as the work it describes.
 
 **Current phase:** 2, Stub downstream (not started). Phases 0–1 done
 **Last updated:** 2026-11-19
