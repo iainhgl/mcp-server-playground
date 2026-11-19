@@ -214,7 +214,7 @@ There are three models. The playground implements 1 and 2 and documents 3 as the
 
 ## 6. Components
 
-The language is **Python 3.12** with `uv` for every built service. Python matches the `bedrock-agentcore` SDK and the MCP Python SDK. The services are FastAPI, `authlib` / `joserfc` for OAuth/JWT, and `httpx`. A shared package `packages/common` holds JWT validation, ledger emission, fingerprinting and OTel trace propagation.
+The language is **Python 3.12**. The repo is a `uv` workspace (`pyproject.toml` at the root, `uv.lock`), with members `packages/*` and `services/*`. Python matches the `bedrock-agentcore` SDK and the MCP Python SDK. Libraries: **MCP Python SDK 2.x** (`mcp.server.mcpserver.MCPServer`, formerly FastMCP), Starlette (which comes with the SDK), PyJWT for JWT validation, and **`httpx2`** (the fork the MCP SDK 2.x depends on) for outbound HTTP. A shared package `packages/common` (`playground_common`) holds the multi-issuer JWT authorizer, ledger emission, fingerprinting and the outbound HTTP client. The client trusts only the CA files listed in `CA_FILES` and sends traffic through `HTTPS_PROXY`.
 
 ### 6.1 Keycloak as Red Hat SSO (`infra/keycloak/bootstrap.py`, reconciled on every `make up`)
 Pinned to Keycloak **26.8.1**. The realm is configured by an idempotent script through the admin REST API rather than a one-shot realm import, so the config can change without wiping volumes.
@@ -234,8 +234,11 @@ Pinned to Keycloak **26.8.1**. The realm is configured by an idempotent script t
 - No Client ID Metadata Document (CIMD) support is advertised, so MCP clients will use DCR.
 
 ### 6.2 gateway (`services/gateway`)
-- **Endpoints:** `POST/GET /mcp` (Streamable HTTP), `GET /.well-known/oauth-protected-resource` (RFC 9728), `GET /healthz`.
-- **Unauthenticated requests:** 401 with a `WWW-Authenticate` header carrying `resource_metadata` (and `scope="mcp:tools"`). `insufficient_scope` gets a 403 with the same header.
+- **Endpoints:** `POST/GET /mcp` (Streamable HTTP), `GET /.well-known/oauth-protected-resource/mcp` (RFC 9728 path-suffixed form, served by the SDK and named in `WWW-Authenticate`), `GET /.well-known/oauth-protected-resource` (root form, our own route, for clients that skip the header), `GET /healthz`.
+- **Built on SDK plumbing:** `MCPServer(token_verifier=…, auth=AuthSettings(…))` provides BearerAuth → RequireAuth (401/403) and PRM. Our `TokenVerifier` is the multi-issuer authorizer. `validate_token_resource=False`, because the authorizer checks `aud` itself (Keycloak ignores RFC 8707, so there is no `resource` claim to compare).
+- **Unauthenticated requests:** 401 with a `WWW-Authenticate` header carrying `resource_metadata` and `scope="mcp:tools"`. SDK 2.3 leaves out `scope`, so a small ASGI wrapper (`WwwAuthenticateScope`) adds it. `insufficient_scope` gets a 403 with the same header.
+- **Transport security:** the SDK's DNS-rebinding protection allows only `Host: gateway.localtest.me`. Caddy passes the Host through unchanged.
+- **Session binding:** the SDK ties each `Mcp-Session-Id` to the principal (client_id, iss, sub) that created it. Another user's valid token gets **404** on that session.
 - **Inbound authorizer:** configured with the same shape as AgentCore `customJWTAuthorizer`. It accepts a **list** of authorizers so that phase 7 is a config change:
   ```yaml
   authorizers:
@@ -360,7 +363,7 @@ Automated in `tests/e2e`: pytest + a scripted MCP client (Python SDK, doing Flow
 | S11 | carol (`carol.w`) | Mapping via attribute works. Sees ALPHA+BETA |
 | S12 | dave (no Jira account) | Consent fails cleanly. Tool returns a clear error. No vault row |
 | S13 | User revokes the app in Jira | Next call: 401 → refresh `invalid_grant` → row purged → consent link again |
-| S14 | Token with wrong audience (e.g. T2 portal token) sent to gateway | 401 + `WWW-Authenticate` |
+| S14 | Tokens the gateway must refuse: DCR token without `mcp:tools`, portal token T2, ID token, tampered signature, untrusted issuer (master realm). Also another user's token on an existing MCP session | 401 + `WWW-Authenticate` for each, with the reason in the ledger. Keycloak refuses to issue `mcp:tools` to `portal` (`invalid_scope`). The foreign session gets 404 |
 | S15 | T1 sent straight to Jira | 401 (proves no passthrough path) |
 | S16 | `jira___add_comment` with READ-only grant | Step-up: new consent for `WRITE`. Vault scopes updated |
 | S17 | alice disabled in Keycloak | Client refresh fails. **An already-issued T1 still works until `exp`** (documents the gap; optional `GATEWAY_INTROSPECT=true` closes it) |
@@ -453,3 +456,4 @@ Design changes discovered during the build. The detail behind each change lives 
 |---|---|---|
 | 2026-11-19 | all | Initial spec. Revised for decisions D1–D3 (stub-only downstream, RH SSO first, off-the-shelf clients) |
 | 2026-11-19 | §6.1, §6.6, §9 | Phase 0: Keycloak configured by an idempotent bootstrap script instead of a realm import. `mcp:tools` is a realm *optional* scope (was: default) so non-MCP clients can't get the gateway audience. RFC 8707 and discovery behaviour of 26.8.1 recorded. OpenBao runs in server mode with Raft (was: dev mode) |
+| 2026-11-19 | §6, §6.2, §8 | Phase 1: MCP SDK 2.x (`MCPServer`, `httpx2`), uv workspace, path-suffixed PRM + root PRM, `WWW-Authenticate` scope wrapper, DNS-rebinding allowed host, session-to-principal binding. S14 expanded to the cases actually tested |

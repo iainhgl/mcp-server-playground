@@ -12,3 +12,9 @@ idp.localtest.me {
 	# Older RH SSO builds may not. See PROGRESS.md discoveries.
 	reverse_proxy keycloak:8080
 }
+
+gateway.localtest.me {
+	# Host header passes through unchanged, so the MCP SDK's DNS-rebinding
+	# check sees gateway.localtest.me. SSE responses are flushed automatically.
+	reverse_proxy gateway:8000
+}

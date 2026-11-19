@@ -1,0 +1,17 @@
+# Gateway config. Shapes mirror AgentCore Gateway (SPEC §6.2, §11).
+
+# The resource identifier: it goes in PRM, and tokens' `aud` must contain it.
+resource: https://gateway.localtest.me/mcp
+required_scopes: [mcp:tools]
+
+# ≈ AgentCore customJWTAuthorizer. A list, so a second IdP (SPEC §12) is a config change.
+authorizers:
+  - name: rhsso
+    discoveryUrl: https://idp.localtest.me/realms/playground/.well-known/openid-configuration
+    allowedAudience: [https://gateway.localtest.me/mcp]
+    # DCR gives every MCP client a random client_id, so the allowlist can't be static.
+    # Tighten later with a pattern, or by pre-registering clients (as Entra will require).
+    allowedClients: ["*"]
+
+# Downstream targets arrive in phase 4.
+targets: []

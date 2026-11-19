@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "atlassian-playground": {
+      "type": "http",
+      "url": "https://gateway.localtest.me/mcp"
+    }
+  }
+}

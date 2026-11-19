@@ -3,7 +3,7 @@ COMPOSE := docker compose
 CADDY_ROOT := certs/caddy-root.crt
 HOSTS := idp gateway identity portal jira confluence
 
-.PHONY: help env up down nuke ps logs trust untrust hosts check bootstrap
+.PHONY: help env up down nuke ps logs trust untrust hosts check check0 check1 bootstrap claude ledger
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -56,6 +56,19 @@ untrust: ## Remove the Caddy root CA from your keychain
 hosts: ## Offline fallback: add *.localtest.me to /etc/hosts (sudo)
 	@for h in $(HOSTS); do grep -q " $$h.localtest.me$$" /etc/hosts || echo "127.0.0.1 $$h.localtest.me" | sudo tee -a /etc/hosts; done
 
-check: ## Phase 0 exit-criteria check
+certs-local:
 	@test -f $(CADDY_ROOT) || $(COMPOSE) cp caddy:/data/caddy/pki/authorities/local/root.crt $(CADDY_ROOT)
+
+check: check0 check1 ## Run every phase's exit-criteria checks
+
+check0: certs-local ## Phase 0 check: IdP, DCR, PKCE, audience scoping
 	@set -a; source .env; set +a; uv run --script scripts/phase0_check.py
+
+check1: certs-local ## Phase 1 check: gateway 401/PRM discovery, whoami, rejections (S1, S14)
+	@set -a; source .env; set +a; uv run --script scripts/phase1_check.py
+
+claude: certs-local ## Start Claude Code trusting the local CA (Node ignores the macOS keychain)
+	NODE_EXTRA_CA_CERTS=$(CURDIR)/$(CADDY_ROOT) claude
+
+ledger: ## Follow token-ledger events from all services
+	@$(COMPOSE) logs -f --no-log-prefix 2>/dev/null | grep --line-buffered '^LEDGER ' | cut -c8- | jq -c .

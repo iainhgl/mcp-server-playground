@@ -1,5 +1,6 @@
 # MCP OAuth playground. See SPEC.md §2 (topology) and §6.6 (infra).
 # Phase 0: TLS edge (Caddy), IdP (Keycloak as RH SSO), Postgres, OpenBao, mitmproxy.
+# Phase 1: gateway (MCP server, JWT authorizer, PRM).
 
 name: mcp-playground
 
@@ -118,6 +119,27 @@ services:
       - ./.secrets:/secrets
     depends_on:
       openbao: { condition: service_healthy }
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    environment:
+      # Outbound (JWKS/discovery) goes via mitmproxy → Caddy. Trust both CAs explicitly.
+      CA_FILES: /caddy-data/caddy/pki/authorities/local/root.crt:/mitm/mitmproxy-ca-cert.pem
+      HTTPS_PROXY: http://mitmproxy:8080
+      NO_PROXY: localhost,127.0.0.1
+    volumes:
+      - caddy-data:/caddy-data:ro
+      - ./certs/mitmproxy:/mitm:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 3s
+      retries: 20
+    depends_on:
+      caddy: { condition: service_healthy }
+      mitmproxy: { condition: service_started }
+    networks: [mesh]
 
   mitmproxy:
     image: mitmproxy/mitmproxy:12.3.0

@@ -1,0 +1,18 @@
+[project]
+name = "gateway"
+version = "0.1.0"
+description = "AgentCore-Gateway-shaped MCP server (SPEC §6.2)"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp==2.3.0",
+    "playground-common",
+    "pyyaml>=6",
+    "uvicorn==0.54.0",
+]
+
+[tool.uv.sources]
+playground-common = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.13,<0.14"]
+build-backend = "uv_build"
