@@ -198,6 +198,28 @@ def main() -> None:
             and not any(e["event"] == "downstream.call" for e in after),
             "C6 next call: vault.miss → straight to consent, no Jira call (no more 401 loop)")
 
+    # ---- protocol 2026-07-28 (what Claude Code negotiates): InputRequiredResult + client retry.
+    # alice's row was purged by C6 above, so she needs consent again.
+    m26 = McpSession(alice.t1, {"elicitation": {"url": {}}}, "phase4-alice-2026", protocol="2026-07-28")
+    R.check(m26.init_status == 200, "2026-07-28 client initializes")
+    ir = m26.call("jira___search_issues").get("input_required") or {}
+    req = (ir.get("inputRequests") or {}).get("jira_consent", {})
+    url26 = (req.get("params") or {}).get("url", "")
+    R.check(req.get("method") == "elicitation/create" and req["params"].get("mode") == "url" and LINK.match(url26),
+            "2026-07-28: tool returns InputRequiredResult with a URL elicitation (no -32042)", str(ir)[:120])
+    dec = m26.call("jira___search_issues", input_responses={"jira_consent": {"action": "decline"}})
+    R.check(dec.get("isError") and LINK.search(dec.get("text", "")),
+            "2026-07-28: retry after DECLINE → isError text with the link (server learns of the decline)")
+    ir2 = m26.call("jira___search_issues").get("input_required") or {}
+    url2 = ir2["inputRequests"]["jira_consent"]["params"]["url"]
+    alice.consent(url2)
+    ok26 = m26.call("jira___search_issues", input_responses={"jira_consent": {"action": "accept"}})
+    R.check(not ok26.get("isError") and keys(ok26) == ["ALPHA-1", "ALPHA-2", "ALPHA-3"],
+            "2026-07-28: consent, then client retry (accept) → ALPHA results", str(ok26)[:120])
+    R.check(any(x["event"] == "consent.signalled" and x.get("mode") == "input_required"
+                and x.get("protocol") == "2026-07-28" for x in ledger(since)),
+            "ledger: consent.signalled mode=input_required protocol=2026-07-28")
+
     # ---- consentSignal=tool_error: even an elicitation-capable client gets the link as tool-result text
     set_signal("tool_error")
     try:

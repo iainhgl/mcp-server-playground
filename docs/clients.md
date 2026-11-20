@@ -59,7 +59,8 @@ SPEC §6.7. Record what each real client actually does here (S2, S4, S20).
 | Claude Code version | 2.1.328 |
 | Declares `elicitation.url`? (ledger `consent.signalled mode=`) | **Yes**: `mode=url_elicitation` (run 1, 16:52–16:55) |
 | How the consent link was presented | URL-elicitation prompt (-32042) showing the long URL. **Enter = decline** (run 3). Declined → Claude Code doesn't pass the error message on, so the link never reaches the chat (run 2). Opening the URL from the prompt (copy/Cmd-click) → Jira consent → binding ✅ (run 3, 10:26) |
-| After consent completed | Run 3: prompt stuck on **"Reopen URL"**, because the gateway didn't send `notifications/elicitation/complete`. Fixed. Re-test: does it clear by itself? |
+| Protocol negotiated | **2026-07-28** (ledger `consent.signalled protocol=`) |
+| After consent completed | Run 4: *"Waiting for the server to confirm completion… ❯ Reopen URL / Retry now / Cancel"*. That's the 2026-07-28 flow: the client expects to **retry**. **Retry now → results** ✅. The gateway now returns `InputRequiredResult` to such clients. Re-test: does Claude Code retry by itself? |
 | `consentSignal: tool_error` (link in chat) | not yet tried |
 | Did the model retry on its own after consent? | (re-test with the completion notification) |
 | H3: Keycloak login prompt at the portal? | |

@@ -23,7 +23,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.exceptions import UrlElicitationRequiredError
-from mcp_types import ElicitRequestURLParams
+from mcp_types import ElicitRequest, ElicitRequestURLParams, InputRequiredResult
 from playground_common import fingerprint, ledger
 from playground_common.http import async_client
 from playground_common.jwt_authz import AuthorizerConfig, AuthzError, MultiIssuerAuthorizer
@@ -131,6 +131,9 @@ WATCH_INTERVAL_S, WATCH_MAX_S = 2.0, 600.0
 _watchers: set[asyncio.Task] = set()
 
 
+CONSENT_INPUT_KEY = "jira_consent"  # key of our entry in InputRequiredResult.input_requests (2026-07-28)
+
+
 def _supports_url_elicitation(ctx: Context) -> bool:
     caps = ctx.client_capabilities
     return bool(caps and caps.elicitation and caps.elicitation.url is not None)
@@ -175,11 +178,28 @@ async def _jira(ctx: Context, tool: str, scopes: list[str], method: str, path: s
     except ConsentRequired as c:
         message = (f"Jira access for this assistant isn't connected yet (needs {' '.join(c.scopes)}). "
                    f"Open this link, sign in to Jira and approve access, then ask again: {c.url}")
-        proto = ctx.protocol_version
+        proto = ctx.protocol_version or ""
+        eid = fingerprint(c.session_uri)
+        prior = (ctx.input_responses or {}).get(CONSENT_INPUT_KEY)
+        if prior is not None and getattr(prior, "action", None) in ("decline", "cancel"):
+            # 2026-07-28 retry after the user declined/cancelled the prompt: the server DOES learn this,
+            # so fall back to the link as text. The model can show it, and the user can still open it later.
+            ledger.emit(SERVICE, "consent.signalled", token=c.session_uri, label="T6", mode="tool_error",
+                        setting=CONSENT_SIGNAL, protocol=proto, after=prior.action)
+            raise ToolError(message) from None
+        if _use_url_elicitation(ctx) and proto >= "2026-07-28":
+            # 2026-07-28: no -32042 and no notifications/elicitation/complete. Return InputRequiredResult;
+            # the client shows the URL, then RETRIES this tools/call ("Retry now"), and the retry finds the
+            # token in the vault. No request_state: the vault is the source of truth on every retry.
+            ledger.emit(SERVICE, "consent.signalled", token=c.session_uri, label="T6", mode="input_required",
+                        setting=CONSENT_SIGNAL, protocol=proto, elicitation_id=eid,
+                        retry=prior.action if prior is not None else None)
+            return InputRequiredResult(input_requests={CONSENT_INPUT_KEY: ElicitRequest(params=ElicitRequestURLParams(
+                message="Connect your Jira account so the assistant can act as you. Retry when you've approved.",
+                url=c.url, elicitation_id=eid))})
         if _use_url_elicitation(ctx):
-            # -32042 is one-way: the gateway never learns if the user declined or dismissed the prompt.
+            # 2025-11-25: -32042 is one-way: the gateway never learns if the user declined or dismissed the prompt.
             # So the link also goes in the error message the model sees (not every client shows it).
-            eid = fingerprint(c.session_uri)
             ledger.emit(SERVICE, "consent.signalled", token=c.session_uri, label="T6", mode="url_elicitation",
                         setting=CONSENT_SIGNAL, protocol=proto, elicitation_id=eid)
             task = asyncio.create_task(_watch_consent(ctx.session, c, eid))
@@ -211,8 +231,10 @@ def _issue_summary(i: dict) -> dict[str, Any]:
 
 
 @mcp.tool(name="jira___get_myself", description="Who am I in Jira? Returns your Jira username and display name.")
-async def jira_get_myself(ctx: Context) -> dict[str, Any]:
+async def jira_get_myself(ctx: Context) -> dict[str, Any] | InputRequiredResult:
     me = await _jira(ctx, "jira___get_myself", ["READ"], "GET", "/rest/api/2/myself")
+    if isinstance(me, InputRequiredResult):
+        return me
     return {k: me.get(k) for k in ("name", "key", "displayName", "emailAddress")}
 
 
@@ -221,15 +243,19 @@ async def jira_get_myself(ctx: Context) -> dict[str, Any]:
     description="Search Jira issues you can see, with JQL (e.g. 'project = ALPHA', 'assignee = currentUser() AND "
     "status = \"To Do\"'). An empty JQL lists everything you can see.",
 )
-async def jira_search_issues(ctx: Context, jql: str = "", max_results: int = 20) -> dict[str, Any]:
+async def jira_search_issues(ctx: Context, jql: str = "", max_results: int = 20) -> dict[str, Any] | InputRequiredResult:
     res = await _jira(ctx, "jira___search_issues", ["READ"], "POST", "/rest/api/2/search",
                       json={"jql": jql, "maxResults": max(1, min(max_results, 50))})
+    if isinstance(res, InputRequiredResult):
+        return res
     return {"total": res["total"], "issues": [_issue_summary(i) for i in res["issues"]]}
 
 
 @mcp.tool(name="jira___get_issue", description="Get one Jira issue (e.g. ALPHA-1) with its description and comments.")
-async def jira_get_issue(ctx: Context, key: str) -> dict[str, Any]:
+async def jira_get_issue(ctx: Context, key: str) -> dict[str, Any] | InputRequiredResult:
     i = await _jira(ctx, "jira___get_issue", ["READ"], "GET", f"/rest/api/2/issue/{key}")
+    if isinstance(i, InputRequiredResult):
+        return i
     f = i["fields"]
     return _issue_summary(i) | {
         "description": f.get("description"), "reporter": (f.get("reporter") or {}).get("name"),
@@ -241,9 +267,11 @@ async def jira_get_issue(ctx: Context, key: str) -> dict[str, Any]:
     name="jira___add_comment",
     description="Add a comment to a Jira issue as you. Needs WRITE access; you may be asked to approve it.",
 )
-async def jira_add_comment(ctx: Context, key: str, body: str) -> dict[str, Any]:
+async def jira_add_comment(ctx: Context, key: str, body: str) -> dict[str, Any] | InputRequiredResult:
     c = await _jira(ctx, "jira___add_comment", ["WRITE"], "POST", f"/rest/api/2/issue/{key}/comment",
                     json={"body": body})
+    if isinstance(c, InputRequiredResult):
+        return c
     return {"id": c["id"], "author": c["author"]["name"], "created": c["created"]}
 
 
