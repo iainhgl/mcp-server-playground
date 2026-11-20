@@ -17,6 +17,7 @@ The production target is **Amazon Bedrock AgentCore Gateway + AgentCore Identity
 | D1 | A real Jira/Confluence DC exists but **cannot be connected** to this PoC | The **stub is the only downstream**. Fidelity comes from DC REST/OAuth docs plus optional hand-captured, sanitised sample responses dropped into `fixtures/`. The real-Jira profile is removed. |
 | D2 | Production has **two IdPs**: Entra ID (main corporate) and Red Hat SSO. Phase 1 supports **one** | Phase 1 uses **Keycloak configured as Red Hat SSO**. RH SSO is Red Hat's build of Keycloak, so this is near-real rather than a mock. Entra cannot run locally anyway. All code stays issuer-agnostic, and the second IdP is planned for phase 7 (§12). *Flip this if Entra must come first. Only the realm config and §12 change.* |
 | D3 | **Off-the-shelf MCP clients** are primary. Claude Code for the PoC; GitHub Copilot (VS Code) next; MS Copilot later | The client runs OAuth itself against the IdP (MCP auth spec), and there is no custom agent app. A small **consent portal** is still needed to finish downstream consent and bind it to the user (§4.2). |
+| D4 | 2026-11-20: **GitHub Copilot is not available on the dev laptop** | S20 (VS Code + Copilot) is **deferred**, not dropped. Phase 6 covers the Confluence persona only. Claude Code stays the only real MCP client for now |
 
 ---
 
@@ -451,7 +452,7 @@ mcp-server-playground/
 | **3. Identity + vault** | identity service, envelope encryption, sessions, callback, CompleteResourceTokenAuth | Scripted Flow B without gateway. S9 passes |
 | **4. End-to-end 3LO** | Gateway targets + consent signalling + portal + ledger viewer + mitmproxy labeler | S3, S4, S5, S8, S15, S18: **Claude Code fetches alice's Jira issues after consent** |
 | **5. Lifecycle & attacks** | Refresh locking, revocation, step-up, verify mode, fault injection | S6, S7, S10–S13, S16, S17, S19 |
-| **6. More clients & sources** | VS Code + Copilot; Confluence persona | S20, Confluence tools |
+| **6. More clients & sources** | Confluence persona + `confluence___*` tools (VS Code + Copilot deferred, D4) | Confluence tools work per user through the same vault/consent path (S20 deferred) |
 | **7. Second IdP** | Decide and implement Entra alongside RH SSO (§12) | Design record + one of the §12 options working |
 | **8. AWS port (separate spec)** | Gateway/identity replaced by AgentCore. Portal deployed. Public endpoint for clients | §11 checklist answered |
 
@@ -503,3 +504,4 @@ Design changes discovered during the build. The detail behind each change lives 
 | 2026-11-20 | §6.2, §6.3 | S4 run 3: the gateway now sends `notifications/elicitation/complete` once consent completes (fixes Claude Code's stuck "Reopen URL"). `consentSignal` setting (auto / tool_error / url_elicitation). New `x-GetConsentSessionStatus` |
 | 2026-11-20 | §6.2 | Protocol-version-aware consent signalling: 2026-07-28 → `InputRequiredResult` + client retry (decline → link as text). 2025-11-25 → -32042 + `elicitation/complete`. 2026-07-28 transport details recorded (`_meta` envelope, `Mcp-Method`/`Mcp-Name` headers) |
 | 2026-11-20 | §5, §6.1, §6.2, §6.3, §8, §11 | Phase 5: verify mode built (at binding, `jira_username` claim, fails closed). PKCE enforcer realm policy. T1 names `gateway-svc` so Keycloak introspection works. Optional gateway introspection. 403 `reason` codes. S17 expectations match observed behaviour. New risk R7 (client refresh bursts vs IdP rotation) |
+| 2026-11-20 | §0, §10 | D4: S20 (VS Code + Copilot) deferred, because Copilot isn't available on the dev laptop. Phase 6 = Confluence persona |
