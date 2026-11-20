@@ -21,6 +21,10 @@ identity:
   serviceClientId: gateway-svc
   returnUrl: https://portal.localtest.me/oauth/return
 
+# How "consent needed" reaches the user: auto | tool_error | url_elicitation (SPEC §6.2).
+# Env GATEWAY_CONSENT_SIGNAL overrides it.
+consentSignal: auto
+
 # ≈ AgentCore Gateway targets: tool names are <target>___<tool>.
 targets:
   - name: jira

@@ -3,7 +3,7 @@ COMPOSE := docker compose
 CADDY_ROOT := certs/caddy-root.crt
 HOSTS := idp gateway identity portal jira confluence
 
-.PHONY: help env up down nuke ps logs trust untrust hosts check check0 check1 check2 check3 check4 bootstrap claude ledger
+.PHONY: help env up down nuke ps logs trust untrust hosts check check0 check1 check2 check3 check4 bootstrap claude ledger consent-signal
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -79,6 +79,10 @@ check4: certs-local ## Phase 4 check: end to end via gateway + portal (S3 S5 S8 
 
 claude: certs-local ## Start Claude Code trusting the local CA (resume: make claude ARGS=--continue)
 	NODE_EXTRA_CA_CERTS=$(CURDIR)/$(CADDY_ROOT) claude $(ARGS)
+
+consent-signal: ## Switch how the gateway signals consent: make consent-signal MODE=auto|tool_error|url_elicitation
+	GATEWAY_CONSENT_SIGNAL=$(MODE) $(COMPOSE) up -d --wait gateway
+	@echo "gateway consentSignal=$(or $(MODE),auto (from gateway.yaml))"
 
 ledger: ## Follow token-ledger events from all services
 	@$(COMPOSE) logs -f --no-log-prefix 2>/dev/null | grep --line-buffered '^LEDGER ' | cut -c8- | jq -c .

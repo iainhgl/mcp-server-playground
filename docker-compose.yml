@@ -149,6 +149,8 @@ services:
       NO_PROXY: localhost,127.0.0.1,postgres
       # The gateway's own credential for identity (T7 via Keycloak client gateway-svc, ≈ IAM role).
       GATEWAY_SVC_CLIENT_SECRET: ${GATEWAY_SVC_CLIENT_SECRET}
+      # Overrides consentSignal in gateway.yaml (auto | tool_error | url_elicitation). Empty = use the file.
+      GATEWAY_CONSENT_SIGNAL: ${GATEWAY_CONSENT_SIGNAL:-}
       LEDGER_DATABASE_URL: postgresql://ledger_writer:${LEDGER_WRITER_PASSWORD}@postgres:5432/ledger
     volumes:
       - caddy-data:/caddy-data:ro

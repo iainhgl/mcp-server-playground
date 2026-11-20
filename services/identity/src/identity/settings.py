@@ -32,6 +32,7 @@ CALLER_ACL: dict[str, set[str]] = {
     "CompleteResourceTokenAuth": {"portal-svc"},
     # Playground extensions (no AgentCore equivalent).
     "x-ResourceTokenRejected": {"gateway-svc"},  # C6: downstream returned 401 for a vaulted T4
+    "x-GetConsentSessionStatus": {"gateway-svc"},  # so the gateway can send notifications/elicitation/complete
     "x-ListUserConnections": {"portal-svc"},
     "x-DeleteUserConnection": {"portal-svc"},
 }

@@ -471,6 +471,26 @@ async def resource_token_rejected(request: Request, body: dict) -> dict:
     return {"status": "REFRESHED" if new else "PURGED"}
 
 
+@api
+async def get_consent_session_status(request: Request, body: dict) -> dict:
+    """Status of a 3LO session (T6), for a caller that holds the same user's T3. Lets the gateway tell
+    the MCP client that an out-of-band consent finished (notifications/elicitation/complete)."""
+    await _caller(request, "x-GetConsentSessionStatus")
+    try:
+        _, user_id = wat.verify(body["workloadIdentityToken"])
+    except jwt.PyJWTError as e:
+        raise ApiError(400, "ValidationException", f"invalid workloadIdentityToken: {e.__class__.__name__}") from None
+    async with db.pool.connection() as conn:
+        s = await (await conn.execute("select user_id, status, expires_at from oauth_sessions where session_uri = %s",
+                                      (body.get("sessionUri", ""),))).fetchone()
+    if s is None or s["user_id"] != user_id:  # only the session's own user may poll it
+        raise ApiError(404, "ResourceNotFoundException", "session not found")
+    status = s["status"]
+    if status in ("IN_PROGRESS", "PENDING_BINDING") and s["expires_at"] < _now():
+        status = "EXPIRED"
+    return {"sessionStatus": status}
+
+
 # ------------------------------------------------------------------ playground extensions (portal "Connected apps")
 
 @api
@@ -521,6 +541,7 @@ app = Starlette(lifespan=lifespan, routes=[
     Route("/identities/CompleteResourceTokenAuth", complete_resource_token_auth, methods=["POST"]),
     Route("/identities/oauth2/callback", oauth2_callback, methods=["GET"]),
     Route("/identities/x-ResourceTokenRejected", resource_token_rejected, methods=["POST"]),
+    Route("/identities/x-GetConsentSessionStatus", get_consent_session_status, methods=["POST"]),
     Route("/identities/x-ListUserConnections", list_user_connections, methods=["POST"]),
     Route("/identities/x-DeleteUserConnection", delete_user_connection, methods=["POST"]),
     Route("/admin/vault", admin_vault, methods=["GET"]),

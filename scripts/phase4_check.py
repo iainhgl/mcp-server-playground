@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 
 import httpx
@@ -28,6 +29,12 @@ STUB_ADMIN = {"X-Stub-Admin": os.environ["STUB_ADMIN_TOKEN"]}
 R = Results()
 raw: list[str] = []
 LINK = re.compile(r"https://jira\.localtest\.me/rest/oauth2/latest/authorize\?\S+")
+
+
+def set_signal(mode: str) -> None:
+    """Recreate the gateway with GATEWAY_CONSENT_SIGNAL=mode ('' = gateway.yaml) and wait until healthy."""
+    subprocess.run(["docker", "compose", "up", "-d", "--wait", "gateway"], check=True, capture_output=True,
+                   env=os.environ | {"GATEWAY_CONSENT_SIGNAL": mode})
 
 
 def psql(db: str, sql: str) -> str:
@@ -103,6 +110,8 @@ def main() -> None:
 
     # ---- URL elicitation (-32042) + S8: bob, separate consent, BETA only
     mb = bob.mcp(url_elicitation=True)
+    inbox = mb.listen()  # standalone GET stream: where notifications/elicitation/complete arrives
+    time.sleep(1)
     e = mb.call("jira___search_issues")
     err = e.get("error") or {}
     elic = (err.get("data") or {}).get("elicitations", [{}])[0]
@@ -111,6 +120,14 @@ def main() -> None:
     R.check(LINK.search(err.get("message", "")) is not None,
             "-32042 error message also carries the link (survives a declined/dismissed prompt)")
     bob.consent(elic["url"])
+    deadline = time.time() + 15
+    done = []
+    while time.time() < deadline and not done:
+        done = [x for x in inbox if x.get("method") == "notifications/elicitation/complete"]
+        time.sleep(0.5)
+    R.check(bool(done) and done[0]["params"].get("elicitationId") == elic.get("elicitationId"),
+            "after consent: server sent notifications/elicitation/complete with the same elicitationId",
+            str(inbox)[:120])
     rb = mb.call("jira___search_issues")
     R.check(keys(rb) == ["BETA-1", "BETA-2", "BETA-3"], "S8 bob → BETA only")
     R.check(keys(m.call("jira___search_issues")) == ["ALPHA-1", "ALPHA-2", "ALPHA-3"], "S8 alice unaffected")
@@ -180,6 +197,18 @@ def main() -> None:
     R.check(rv2.get("isError") and LINK.search(rv2["text"]) and any(e["event"] == "vault.miss" for e in after)
             and not any(e["event"] == "downstream.call" for e in after),
             "C6 next call: vault.miss → straight to consent, no Jira call (no more 401 loop)")
+
+    # ---- consentSignal=tool_error: even an elicitation-capable client gets the link as tool-result text
+    set_signal("tool_error")
+    try:
+        md2 = dave.mcp(url_elicitation=True)
+        te = md2.call("jira___search_issues")
+        R.check("error" not in te and te.get("isError") and LINK.search(te.get("text", "")),
+                "consentSignal=tool_error → isError text with the link, even with elicitation.url declared")
+        R.check(any(x["event"] == "consent.signalled" and x.get("setting") == "tool_error" and x.get("mode") == "tool_error"
+                    for x in ledger(since)), "ledger: consent.signalled setting=tool_error mode=tool_error")
+    finally:
+        set_signal("")
 
     # ---- invariant 6 across all services (stdout logs + ledger DB)
     logs = subprocess.run(["docker", "compose", "logs", "--no-log-prefix", "gateway", "identity", "jira", "portal"],

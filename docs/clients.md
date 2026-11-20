@@ -58,8 +58,10 @@ SPEC §6.7. Record what each real client actually does here (S2, S4, S20).
 |---|---|
 | Claude Code version | 2.1.328 |
 | Declares `elicitation.url`? (ledger `consent.signalled mode=`) | **Yes**: `mode=url_elicitation` (run 1, 16:52–16:55) |
-| How the consent link was presented | URL-elicitation prompt (-32042). **Declined → Claude Code doesn't pass the error message on, so the link never reaches the chat**, even though the gateway now puts it there (run 2, 17:25:41). Accepting the prompt: not yet tried |
-| Did the model retry on its own after consent? | |
+| How the consent link was presented | URL-elicitation prompt (-32042) showing the long URL. **Enter = decline** (run 3). Declined → Claude Code doesn't pass the error message on, so the link never reaches the chat (run 2). Opening the URL from the prompt (copy/Cmd-click) → Jira consent → binding ✅ (run 3, 10:26) |
+| After consent completed | Run 3: prompt stuck on **"Reopen URL"**, because the gateway didn't send `notifications/elicitation/complete`. Fixed. Re-test: does it clear by itself? |
+| `consentSignal: tool_error` (link in chat) | not yet tried |
+| Did the model retry on its own after consent? | (re-test with the completion notification) |
 | H3: Keycloak login prompt at the portal? | |
 | Result after consent | Via **portal pre-consent** (Connected apps → Connect → Jira login/Allow → 'Jira connected'): the next call returned alice's issues (ALPHA-1, ALPHA-3 assigned to her) ✅ |
 | WRITE step-up (optional) | |

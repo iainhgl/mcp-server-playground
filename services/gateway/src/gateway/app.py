@@ -10,6 +10,7 @@
   otherwise an isError tool result carrying the link.
 """
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -120,9 +121,48 @@ targets = {t["name"]: Target(t, identity) for t in CONFIG.get("targets", [])}
 JIRA = targets["jira"]
 
 
+# How "consent needed" reaches the user (SPEC §6.2):
+#   auto            URL elicitation (-32042) for clients that declare elicitation.url, else isError text with the link
+#   tool_error      always the isError text, so the link lands in the chat (Claude Code drops it on a declined prompt)
+#   url_elicitation always -32042, even for clients that didn't declare support
+CONSENT_SIGNAL = os.environ.get("GATEWAY_CONSENT_SIGNAL") or CONFIG.get("consentSignal", "auto")
+assert CONSENT_SIGNAL in ("auto", "tool_error", "url_elicitation"), CONSENT_SIGNAL
+WATCH_INTERVAL_S, WATCH_MAX_S = 2.0, 600.0
+_watchers: set[asyncio.Task] = set()
+
+
 def _supports_url_elicitation(ctx: Context) -> bool:
     caps = ctx.client_capabilities
     return bool(caps and caps.elicitation and caps.elicitation.url is not None)
+
+
+def _use_url_elicitation(ctx: Context) -> bool:
+    return CONSENT_SIGNAL == "url_elicitation" or (CONSENT_SIGNAL == "auto" and _supports_url_elicitation(ctx))
+
+
+async def _watch_consent(session, c: ConsentRequired, elicitation_id: str) -> None:
+    """MCP 2025-11-25: once an out-of-band URL elicitation completes, the server SHOULD send
+    notifications/elicitation/complete so the client can retry (without it, Claude Code keeps
+    offering "Reopen URL"). We poll identity's session status. A production design would push instead."""
+    waited = 0.0
+    while waited < WATCH_MAX_S:
+        await asyncio.sleep(WATCH_INTERVAL_S)
+        waited += WATCH_INTERVAL_S
+        try:
+            status = await identity.session_status(c.t3, c.session_uri)
+        except Exception:  # noqa: BLE001 - T3 expiry (5 min) or identity hiccup: stop watching quietly
+            return
+        if status == "COMPLETED":
+            try:
+                await session.send_elicit_complete(elicitation_id)
+                ledger.emit(SERVICE, "consent.complete_notified", token=c.session_uri, label="T6",
+                            elicitation_id=elicitation_id)
+            except Exception as e:  # noqa: BLE001 - client may have no open GET stream / session gone
+                ledger.emit(SERVICE, "consent.complete_notify_failed", token=c.session_uri, label="T6",
+                            error=e.__class__.__name__)
+            return
+        if status in ("FAILED", "EXPIRED"):
+            return
 
 
 async def _jira(ctx: Context, tool: str, scopes: list[str], method: str, path: str, **kw) -> Any:
@@ -135,15 +175,22 @@ async def _jira(ctx: Context, tool: str, scopes: list[str], method: str, path: s
     except ConsentRequired as c:
         message = (f"Jira access for this assistant isn't connected yet (needs {' '.join(c.scopes)}). "
                    f"Open this link, sign in to Jira and approve access, then ask again: {c.url}")
-        if _supports_url_elicitation(ctx):
+        proto = ctx.protocol_version
+        if _use_url_elicitation(ctx):
             # -32042 is one-way: the gateway never learns if the user declined or dismissed the prompt.
-            # So the link also goes in the error message the model sees, and it survives a decline.
-            ledger.emit(SERVICE, "consent.signalled", token=c.session_uri, label="T6", mode="url_elicitation")
+            # So the link also goes in the error message the model sees (not every client shows it).
+            eid = fingerprint(c.session_uri)
+            ledger.emit(SERVICE, "consent.signalled", token=c.session_uri, label="T6", mode="url_elicitation",
+                        setting=CONSENT_SIGNAL, protocol=proto, elicitation_id=eid)
+            task = asyncio.create_task(_watch_consent(ctx.session, c, eid))
+            _watchers.add(task)
+            task.add_done_callback(_watchers.discard)
             raise UrlElicitationRequiredError(
                 [ElicitRequestURLParams(message="Connect your Jira account so the assistant can act as you.",
-                                        url=c.url, elicitation_id=fingerprint(c.session_uri))],
+                                        url=c.url, elicitation_id=eid)],
                 message=message) from None
-        ledger.emit(SERVICE, "consent.signalled", token=c.session_uri, label="T6", mode="tool_error")
+        ledger.emit(SERVICE, "consent.signalled", token=c.session_uri, label="T6", mode="tool_error",
+                    setting=CONSENT_SIGNAL, protocol=proto)
         raise ToolError(message) from None
     except DownstreamError as e:
         raise ToolError(f"Gateway error talking to identity ({e.status}).") from None

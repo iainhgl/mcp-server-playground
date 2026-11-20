@@ -26,6 +26,7 @@ class ConsentRequired(Exception):
     session_uri: str
     provider: str
     scopes: list[str]
+    t3: str  # the same user's workload token, so the gateway can poll the session (elicitation/complete)
 
 
 class DownstreamError(Exception):
@@ -82,7 +83,11 @@ class Identity:
             return out["accessToken"]
         ledger.emit(SERVICE, "consent.required", token=out["sessionUri"], label="T6", provider=provider,
                     scopes=scopes, force=force)
-        raise ConsentRequired(out["authorizationUrl"], out["sessionUri"], provider, scopes)
+        raise ConsentRequired(out["authorizationUrl"], out["sessionUri"], provider, scopes, t3)
+
+    async def session_status(self, t3: str, session_uri: str) -> str:
+        out = await self._call("x-GetConsentSessionStatus", {"workloadIdentityToken": t3, "sessionUri": session_uri})
+        return out["sessionStatus"]
 
     async def token_rejected(self, t3: str, provider: str, t4: str) -> str:
         """Tell identity the provider rejected this T4. Returns REFRESHED | PURGED | SUPERSEDED | ABSENT."""

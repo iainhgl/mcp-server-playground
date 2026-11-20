@@ -1,6 +1,7 @@
 """Minimal MCP Streamable-HTTP client for the checks (raw JSON-RPC, so every byte is visible)."""
 
 import json
+import threading
 
 import httpx
 from _oauth import CA, GATEWAY
@@ -34,6 +35,25 @@ class McpSession:
         if r.headers.get("content-type", "").startswith("text/event-stream"):
             return [json.loads(x[5:]) for x in r.text.splitlines() if x.startswith("data:")][-1]
         return r.json()
+
+    def listen(self) -> list[dict]:
+        """Open the standalone GET /mcp SSE stream (server-initiated messages) in a background thread.
+        Returns the live list that incoming JSON-RPC messages are appended to."""
+        received: list[dict] = []
+        h = {"Accept": "text/event-stream", "Authorization": f"Bearer {self.token}",
+             "Mcp-Session-Id": self.sid, "Mcp-Protocol-Version": PROTOCOL}
+
+        def run() -> None:
+            try:
+                with httpx.stream("GET", GATEWAY, headers=h, verify=CA, timeout=httpx.Timeout(10, read=120)) as r:
+                    for line in r.iter_lines():
+                        if line.startswith("data:"):
+                            received.append(json.loads(line[5:]))
+            except httpx.HTTPError:
+                pass
+
+        threading.Thread(target=run, daemon=True).start()
+        return received
 
     def call(self, tool: str, args: dict | None = None) -> dict:
         """Returns {'error': {...}} for a JSON-RPC error, else {'isError', 'text', 'data'}."""
