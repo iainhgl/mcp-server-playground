@@ -169,9 +169,12 @@ async def _bind(session_uri: str, t2: str, user: dict) -> Response:
         return HTMLResponse(views.result(user, True, "Jira connected",
                                          "You can close this tab and ask your assistant again."))
     msg = out.get("message", "")
-    if status == 403:
+    if out.get("reason") == "binding_mismatch":
         msg = ("This approval was started by a different user than the one signed in here, so it was discarded. "
                "Nothing was connected.")
+    elif out.get("reason") == "downstream_identity_mismatch":
+        msg = ("The Jira account that approved access is not the one expected for you (were you logged in to Jira "
+               "as someone else?), so it was discarded. Log out of Jira, then try again.")
     return HTMLResponse(views.result(user, False, "Jira wasn't connected", msg), status)
 
 

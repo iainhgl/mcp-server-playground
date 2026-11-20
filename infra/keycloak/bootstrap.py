@@ -57,6 +57,18 @@ def env(name: str) -> str:
     return v
 
 
+# Verify mode (SPEC §5.2): T2 carries the user's expected Jira username, so identity can check that the
+# Jira account which consented is the right one (S10). In production this would be a shared AD attribute.
+JIRA_USERNAME_MAPPER = {
+    "name": "jira_username", "protocol": "openid-connect", "protocolMapper": "oidc-usermodel-attribute-mapper",
+    "config": {"user.attribute": "jira_username", "claim.name": "jira_username", "jsonType.label": "String",
+               "access.token.claim": "true", "id.token.claim": "false", "userinfo.token.claim": "false",
+               "introspection.token.claim": "true"},
+}
+
+PKCE_PROFILE, PKCE_POLICY = "pkce-s256", "pkce-for-all-clients"
+
+
 def audience_mapper(name: str, audience: str) -> dict:
     return {
         "name": name,
@@ -96,7 +108,7 @@ CLIENTS = [
                        "post.logout.redirect.uris": "https://portal.localtest.me/*"},
         # User tokens (T2) say they're for the portal, so identity can accept them as `userToken`
         # while the gateway still rejects them.
-        "_mappers": [audience_mapper("audience: portal", "portal")],
+        "_mappers": [audience_mapper("audience: portal", "portal"), JIRA_USERNAME_MAPPER],
     },
     {
         # The portal's *service* credential for calling identity. It's a separate client on purpose:
@@ -224,6 +236,12 @@ def ensure_mcp_scope() -> str:
         sid = created_id(api.post(f"/{REALM}/client-scopes", json=rep))
         log(f"created client scope {MCP_SCOPE}")
     ensure_mapper(f"/{REALM}/client-scopes/{sid}", audience_mapper("audience: gateway", GATEWAY_RESOURCE))
+    # Keycloak 26 only introspects a token for a client in its audience. Naming gateway-svc lets the
+    # gateway's optional introspection (S17) see disabled users / revoked sessions. It's an audience-only
+    # mapper: nothing else accepts aud=gateway-svc.
+    ensure_mapper(f"/{REALM}/client-scopes/{sid}", {**audience_mapper("audience: gateway-svc (introspection)", ""),
+                  "config": {"included.client.audience": "gateway-svc", "access.token.claim": "true",
+                             "id.token.claim": "false", "introspection.token.claim": "true"}})
     # Realm *optional* scope: DCR clients get it, and it only applies when requested.
     realm_optional = ok(api.get(f"/{REALM}/default-optional-client-scopes")).json()
     if not any(s["id"] == sid for s in realm_optional):
@@ -294,6 +312,23 @@ def ensure_users() -> None:
                    json={"type": "password", "value": password, "temporary": False}))
 
 
+def ensure_pkce_policy() -> None:
+    """Hardening (phase 5): Keycloak's anonymous DCR doesn't require PKCE for the clients it creates.
+    A realm client policy with the pkce-enforcer executor makes S256 mandatory for EVERY client's
+    auth-code flow. auto-configure also stamps pkce.code.challenge.method=S256 on clients."""
+    profiles = ok(api.get(f"/{REALM}/client-policies/profiles")).json()
+    others = [p for p in profiles.get("profiles", []) if p["name"] != PKCE_PROFILE]
+    ok(api.put(f"/{REALM}/client-policies/profiles", json={"profiles": others + [{
+        "name": PKCE_PROFILE, "description": "Require PKCE S256",
+        "executors": [{"executor": "pkce-enforcer", "configuration": {"auto-configure": "true"}}]}]}))
+    policies = ok(api.get(f"/{REALM}/client-policies/policies")).json()
+    others = [p for p in policies.get("policies", []) if p["name"] != PKCE_POLICY]
+    ok(api.put(f"/{REALM}/client-policies/policies", json={"policies": others + [{
+        "name": PKCE_POLICY, "description": "PKCE S256 for all clients (incl. DCR-registered MCP clients)",
+        "enabled": True, "conditions": [{"condition": "any-client", "configuration": {}}],
+        "profiles": [PKCE_PROFILE]}]}))
+
+
 def main() -> None:
     ensure_realm()
     ensure_user_profile()
@@ -301,6 +336,7 @@ def main() -> None:
     for spec in CLIENTS:
         ensure_client(spec, sid)
     ensure_dcr_policies()
+    ensure_pkce_policy()
     ensure_users()
     log("realm reconciled")
 

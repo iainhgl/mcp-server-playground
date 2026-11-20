@@ -2,7 +2,7 @@
 
 Living status for the build described in [SPEC.md](SPEC.md). The architecture and token-flow view, with per-step verification markers, is in [docs/architecture.md](docs/architecture.md). Update this file in the same commit as the work it describes.
 
-**Current phase:** 5, Lifecycle & attacks (not started). Phases 0–4 done
+**Current phase:** 6, More clients & sources (not started). Phases 0–5 done
 **Last updated:** 2026-11-19
 
 ---
@@ -18,7 +18,7 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done · ⏸ blocked
 | 2. Stub downstream | ✅ | Manual PKCE flow returns T4. `/search` filtered per user | `make check2`: 36/36 and repeatable. Jira persona: OAuth provider (PKCE, rotation, both client auth methods, scope hierarchy), login/consent/profile pages, REST v2 subset with Jira-style hiding, PATs, faults. Fidelity assumptions F1–F27 in `docs/stub-fidelity.md` |
 | 3. Identity + vault | ✅ | Scripted Flow B without gateway. S9 | `make check3`: 36/36, repeatable, passes after `make down && make up`. The script plays gateway (gateway-svc) and portal (portal-svc + T2) |
 | 4. End-to-end 3LO | ✅ | S3, S4, S5, S8, S15, S18 | `make check4`: 42/42. S4 in Claude Code 2.1.328 (2026-11-20): URL prompt → Jira consent → "I'm done, continue" → results. Five S4 runs found and fixed: the dead-token loop, the lost link on decline, the missing completion notice, and protocol 2026-07-28 consent via InputRequiredResult |
-| 5. Lifecycle & attacks | ⬜ | S6, S7, S10–S13, S16, S17, S19 | |
+| 5. Lifecycle & attacks | ✅ | S6, S7, S10–S13, S16, S17, S19 | `make check5`: 22/22. All six checks pass together. Plus the PKCE enforcer and the token-churn analysis |
 | 6. More clients & sources | ⬜ | S20, Confluence tools | |
 | 7. Second IdP | ⬜ | Design record + one §12 option working | |
 | 8. AWS port | ⬜ | §11 checklist answered (separate spec) | |
@@ -32,18 +32,18 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done · ⏸ blocked
 | S3 | ✅ | `check4`: first `jira___search_issues` → isError + link → Jira login/consent → identity → portal (silent SSO) → binding → retry → ALPHA only |
 | S4 | ✅ | Run 5 (2026-11-20): 10:49:31 `tool.call` → `vault.miss` → `consent.signalled mode=input_required protocol=2026-07-28` → user opened the URL, Jira login + Allow → 10:49:37 `binding.ok` → Claude Code **"I'm done, continue"** retry → 10:50:51 `vault.hit` → `downstream.call` 200 → alice's issues. Then reused across reconnects with no new prompt (vault). Earlier runs (1–4) and their fixes: discoveries log. Optional follow-up: compare `consentSignal: tool_error` |
 | S5 | ✅ | `check4`: repeat calls (search, get_issue) with no consent. BETA-1 → 404 tool error, JQL on BETA → 'does not exist' |
-| S6 | 🟨 | Identity level ✅ (`check3`): a stale T4 is refreshed transparently and the rotated T5 stored. Through the gateway: phase 4–5 |
-| S7 | 🟨 | Identity level ✅ (`check3`): 10 concurrent requests → exactly 1 refresh at Jira (row lock), 9 vault hits, same T4. Through the gateway: phase 5 |
+| S6 | ✅ | `check5`: stale T4 → refreshed transparently through the gateway. The old T5 shows `rotated=1` in the stub's state |
+| S7 | ✅ | `check5`: 10 concurrent MCP tool calls through the gateway → exactly 1 refresh at Jira, 9 `vault.hit` waited on the row lock, all got alice's issues |
 | S8 | ✅ | `check4`: bob consents separately (via -32042 URL elicitation), sees BETA only. alice unaffected. 2 vault rows |
 | S9 | ✅ | `check3`: bob's T2 completing alice's session → 403 `binding.mismatch`. Session FAILED, parked T4/T5 wiped, nothing stored, and alice can't reuse the session |
-| S10 | ⬜ | |
-| S11 | ⬜ | |
+| S10 | ✅ | `check5`: alice approves while logged in to Jira as bob → binding 403 `downstream_identity_mismatch` (ledger expected=alice actual=bob). Portal explains it. Nothing stored. Then approving as Jira-alice works and `downstream_user=alice` is recorded |
+| S11 | ✅ | `check4`: carol (Jira `carol.w`) connects. With verify mode on, her `jira_username=carol.w` claim matches |
 | S12 | ✅ | `check4`: dave → link → Jira login fails → no vault row. Later calls still return a clean consent link |
-| S13 | 🟨 | Stub ✅, identity purge ✅ (`check3`), gateway C6 ✅ (`check4`: Jira 401 → `downstream.unauthorized` → new consent link). Disable-user/offline-session aspects: phase 5 |
+| S13 | ✅ | Stub (`check2`), identity purge (`check3`), and through the gateway: Jira 401 → `x-ResourceTokenRejected` → purge → consent link, portal shows Not connected (`check4`) |
 | S14 | ✅ | `make check1`: 5 bad tokens → 401, each with a ledger reason (audience ×3, bad signature, untrusted issuer). Keycloak refuses `mcp:tools` to portal. Bob's token on alice's session → 404 |
 | S15 | ✅ | `check4`: no T1 fp in any Jira api event. Gateway downstream fps = Jira api.call fps. mitmweb labels every Jira API call `→ T4` |
-| S16 | 🟨 | `check4`: add_comment with READ → WRITE consent link → consent → comment as alice. READ then works without re-consent (scopeHierarchy). Phase 5 for edge cases |
-| S17 | ⬜ | |
+| S16 | ✅ | `check4`: READ → WRITE step-up works, and READ keeps working. `check5`: WRITE consent **denied** at Jira → portal 'not connected (access_denied)', the vault still holds READ, READ tools work |
+| S17 | ✅ | `check5`: alice disabled → her **offline refresh token stops working** ✅. Her **T1 still works until exp** (the documented gap). With `GATEWAY_INTROSPECT=true` the same T1 → 401 (`inbound.introspected active=false`). Re-enabled → normal. Gap noted: **the vault keeps a disabled user's Jira tokens** |
 | S18 | ✅ | `check4`: carol connects in the portal (Jira user carol.w) → first MCP call needs no consent → ALPHA+BETA |
 | S19 | ✅ | All 4 service logs + the ledger DB contain no raw tokens (`check4`, plus check1–3 per service). Access logs turned off where callback URLs carry codes |
 | S20 | ⬜ | |
@@ -67,6 +67,12 @@ Newest first. Record anything learned while building that differs from or adds t
 
 | Date | Phase | Discovery | Spec impact |
 |---|---|---|---|
+| 2026-11-20 | 5 | **Keycloak 26.8 introspection is audience-restricted:** introspecting T1 as `gateway-svc` returned `active:false` until `gateway-svc` was added to T1's `aud`. Introspection-based revocation checks need the introspecting client to be an audience of the token. | §6.1 |
+| 2026-11-20 | 5 | **Verify mode belongs at binding, not at the callback.** At the callback identity only knows who *started* the flow. At binding it has the finishing user's verified T2 (with `jira_username`), and the check covers gateway-triggered and portal pre-consent flows alike. It fails closed when the expected value is unknown. | §5.2, §6.3 |
+| 2026-11-20 | 5 | **The portal showed the wrong explanation:** it turned *every* 403 from identity into "a different user started this". `check5` (S10) caught it. Identity now returns `reason` codes, and the portal words each case. | §6.3, §6.4 |
+| 2026-11-20 | 5 | **Disabling a user (S17):** Keycloak kills their offline refresh token right away, but an issued JWT keeps working until `exp` unless the gateway introspects. And identity keeps the user's **Jira tokens in the vault**: nothing tells it about IdP lifecycle events. Production needs a de-provisioning hook (e.g. Keycloak admin events / Entra SCIM → purge vault rows). | §8 S17, architecture §5 |
+| 2026-11-20 | 5 | **Claude Code token churn explained:** it mints a fresh T1 for nearly every connection burst (minted the same second as first use, never reused later), often **two in parallel** from the same refresh token (pairs used 1× and 3–4× in the same second). Fine with Keycloak defaults. A risk with IdPs enforcing refresh-token rotation + reuse detection (new R7). | §11 R7 |
+| 2026-11-20 | 5 | **PKCE now enforced realm-wide** (client policy). All scripted flows already used it. Whether Claude Code sends PKCE will show at its next interactive login (refreshes are unaffected). | §6.1 |
 | 2026-11-20 | 4 | **Claude Code's 2026-07-28 URL-elicitation UX:** after the URL is opened it shows *"Open again / ❯ I'm done, continue / Decline"*. The client can't detect when the browser step is finished, so the **user confirms**, and that triggers the retry (`inputResponses` accept). One approval is then reused across MCP reconnects, because the vault is keyed by user, not by MCP session. | §6.2, docs/clients.md |
 | 2026-11-20 | 4 | **Claude Code 2.1.328 negotiates MCP protocol `2026-07-28`**, which changes consent signalling entirely. `notifications/elicitation/complete` was removed, and the SDK silently drops it on such sessions, so our `consent.complete_notified` ledger event was misleading. The replacement: the tool *returns* `InputRequiredResult{inputRequests}`, and the **client retries the call** with `inputResponses`. Claude Code's "Retry now" is that retry. The gateway now picks the mechanism per session protocol. Bonus: in 2026-07-28 the server sees a decline, so it can return the link as text. | §6.2, §11 R2 |
 | 2026-11-20 | 4 | **The 2026-07-28 HTTP transport adds per-request requirements**: `params._meta` must carry `io.modelcontextprotocol/protocolVersion` + `clientCapabilities` (capabilities travel per request now, not only at initialize), and the `Mcp-Method` / `Mcp-Name` headers must match the body (else -32602 / -32020). That matters for anything in front of the gateway (ALB, WAF, API Gateway, Caddy): those headers must pass through. | §6.2, §11 R2 |
@@ -120,10 +126,12 @@ Newest first. Record anything learned while building that differs from or adds t
 Caddy 2.11.8 · Postgres 16.16 · psycopg 3.3.9 · cryptography 50.0.2 · Keycloak 26.8.1 · OpenBao 2.7.1 · mitmproxy 12.3.0 · uv 0.13.8 (python 3.12, trixie) · mcp 2.3.0 · httpx2 2.16.2 · PyJWT 2.15.1 · uvicorn 0.54.0
 
 ## How to run
-After a reboot, run `colima start` first (the Docker runtime). Then `make up` → `make trust` (once) → `make check` (all phases) or `make check0` … `check4`. Portal: https://portal.localtest.me (Connected apps, Token ledger). Identity admin view: `curl -H "X-Identity-Admin: $IDENTITY_ADMIN_TOKEN" https://identity.localtest.me/admin/vault`. Jira stub UI: https://jira.localtest.me/secure/ViewProfile.jspa (Jira users alice / bob / carol.w). `make ledger` follows token events. `make claude` starts Claude Code trusting the local CA. `make claude ARGS=--continue` resumes the previous session with the same trust. `make help` lists all targets. Credentials are in `.env` (generated by `make env`). Seed users: alice/bob/carol/dave with `SEED_USER_PASSWORD`.
+After a reboot, run `colima start` first (the Docker runtime). Then `make up` → `make trust` (once) → `make check` (all phases) or `make check0` … `check5`. Toggles: `make consent-signal MODE=…`; `GATEWAY_INTROSPECT=true docker compose up -d gateway`. Portal: https://portal.localtest.me (Connected apps, Token ledger). Identity admin view: `curl -H "X-Identity-Admin: $IDENTITY_ADMIN_TOKEN" https://identity.localtest.me/admin/vault`. Jira stub UI: https://jira.localtest.me/secure/ViewProfile.jspa (Jira users alice / bob / carol.w). `make ledger` follows token events. `make claude` starts Claude Code trusting the local CA. `make claude ARGS=--continue` resumes the previous session with the same trust. `make help` lists all targets. Credentials are in `.env` (generated by `make env`). Seed users: alice/bob/carol/dave with `SEED_USER_PASSWORD`.
 
 ## Next up
-- Phase 5: lifecycle and attacks through the gateway (S6, S7, S10, S11, S13, S16, S17). Backlog: PKCE enforcer, `offline_access` policy, Claude Code token churn, verify mode (§5.2), and the optional S4 comparison with `make consent-signal MODE=tool_error`.
+- Phase 6: VS Code + GitHub Copilot as a second MCP client (S20), and the Confluence persona of the stub + `confluence___*` tools.
+- **You (any time):** next time Claude Code has to log in again (not just refresh), confirm it still works with PKCE enforced. That's evidence it sends PKCE.
+- Backlog: decide the `offline_access` policy for MCP clients (realm offline-session idle/max). An IdP lifecycle hook to purge a disabled user's vault rows. Optional S4 comparison `make consent-signal MODE=tool_error`. R7 refresh-rotation settings.
 - Then phase 5: lifecycle and attacks through the gateway (S6, S7, S10, S11, S13, S16, S17). Backlog: PKCE enforcer, offline_access policy, Claude Code token churn, verify mode (§5.2).
 - **You (any time):** go through `docs/stub-fidelity.md` against the real Jira DC and record the answers.
 - Backlog (phase 5 hardening): enforce PKCE S256 for all clients through a Keycloak client policy. Decide the `offline_access` policy for MCP clients. Investigate Claude Code's token churn (4 tokens in 22 s).

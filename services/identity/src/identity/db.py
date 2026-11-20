@@ -27,6 +27,7 @@ create table if not exists credential_providers (
   scope_hierarchy text[] not null default '{}',
   created_at timestamptz not null default now()
 );
+alter table credential_providers add column if not exists verify_identity jsonb;  -- §5.2 verify mode
 create table if not exists oauth_sessions (   -- T6
   session_uri text primary key,
   state_hash text unique not null,           -- sha256(state); the raw state only exists in the browser URL

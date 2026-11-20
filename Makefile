@@ -3,7 +3,7 @@ COMPOSE := docker compose
 CADDY_ROOT := certs/caddy-root.crt
 HOSTS := idp gateway identity portal jira confluence
 
-.PHONY: help env up down nuke ps logs trust untrust hosts check check0 check1 check2 check3 check4 bootstrap claude ledger consent-signal
+.PHONY: help env up down nuke ps logs trust untrust hosts check check0 check1 check2 check3 check4 check5 bootstrap claude ledger consent-signal
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -60,7 +60,7 @@ hosts: ## Offline fallback: add *.localtest.me to /etc/hosts (sudo)
 certs-local:
 	@test -f $(CADDY_ROOT) || $(COMPOSE) cp caddy:/data/caddy/pki/authorities/local/root.crt $(CADDY_ROOT)
 
-check: check0 check1 check2 check3 check4 ## Run every phase's exit-criteria checks
+check: check0 check1 check2 check3 check4 check5 ## Run every phase's exit-criteria checks
 
 check0: certs-local ## Phase 0 check: IdP, DCR, PKCE, audience scoping
 	@set -a; source .env; set +a; uv run --script scripts/phase0_check.py
@@ -76,6 +76,9 @@ check3: certs-local ## Phase 3 check: identity, token vault, 3LO consent, sessio
 
 check4: certs-local ## Phase 4 check: end to end via gateway + portal (S3 S5 S8 S12 S15 S18, C6, elicitation)
 	@set -a; source .env; set +a; uv run --script scripts/phase4_check.py
+
+check5: certs-local ## Phase 5 check: refresh/concurrency via gateway, verify mode, step-up deny, user disable, PKCE
+	@set -a; source .env; set +a; uv run --script scripts/phase5_check.py
 
 claude: certs-local ## Start Claude Code trusting the local CA (resume: make claude ARGS=--continue)
 	NODE_EXTRA_CA_CERTS=$(CURDIR)/$(CADDY_ROOT) claude $(ARGS)

@@ -38,3 +38,6 @@ CALLER_ACL: dict[str, set[str]] = {
 }
 # Which user tokens identity accepts as `userToken`: the gateway token (T1) or the portal token (T2).
 USER_TOKEN_AUDIENCES = os.environ.get("USER_TOKEN_AUDIENCES", "https://gateway.localtest.me/mcp,portal").split(",")
+
+# Verify mode (SPEC §5.2): at binding, check the downstream account (/myself) against the user's claim.
+VERIFY_DOWNSTREAM = os.environ.get("IDENTITY_VERIFY_DOWNSTREAM", "true").lower() == "true"

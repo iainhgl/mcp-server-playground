@@ -25,6 +25,7 @@ from cryptography.exceptions import InvalidTag
 from playground_common import fingerprint, ledger
 from playground_common.http import async_client
 from playground_common.jwt_authz import AuthorizerConfig, AuthzError, MultiIssuerAuthorizer
+from psycopg.types.json import Jsonb
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -41,6 +42,7 @@ from identity.settings import (
     SERVICE,
     SESSION_TTL,
     USER_TOKEN_AUDIENCES,
+    VERIFY_DOWNSTREAM,
 )
 
 http = async_client()  # outbound HTTPS (IdP JWKS, provider token endpoints) via mitmproxy
@@ -52,13 +54,16 @@ SESSION_URI_PREFIX = "urn:ietf:params:oauth:request_uri:"
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, kind: str, message: str):
+    def __init__(self, status: int, kind: str, message: str, reason: str | None = None):
         super().__init__(message)
-        self.status, self.kind, self.message = status, kind, message
+        self.status, self.kind, self.message, self.reason = status, kind, message, reason
 
 
 def _err(e: ApiError) -> JSONResponse:
-    return JSONResponse({"__type": e.kind, "message": e.message}, status_code=e.status)
+    body = {"__type": e.kind, "message": e.message}
+    if e.reason:
+        body["reason"] = e.reason  # playground: machine-readable cause, so the portal can explain it properly
+    return JSONResponse(body, status_code=e.status)
 
 
 def _now() -> datetime:
@@ -92,14 +97,18 @@ async def _caller(request: Request, op: str) -> str:
     return azp
 
 
-async def _user_id_from_token(token: str, label: str, op: str) -> str:
+async def _user_from_token(token: str, label: str, op: str) -> tuple[str, dict]:
     try:
         _, c = await users.validate(token)
     except AuthzError as e:
         ledger.emit(SERVICE, "user_token.rejected", token=token, label=f"{label}?", op=op, reason=e.reason)
         raise ApiError(400, "ValidationException", f"userToken rejected: {e.reason}") from None
     ledger.emit(SERVICE, "user_token.validated", token=token, label=label, claims=c, op=op)
-    return f"{c['iss']}|{c['sub']}"  # invariant 3: the user id comes only from a verified token
+    return f"{c['iss']}|{c['sub']}", c  # invariant 3: the user id comes only from a verified token
+
+
+async def _user_id_from_token(token: str, label: str, op: str) -> str:
+    return (await _user_from_token(token, label, op))[0]
 
 
 def _admin(request: Request) -> None:
@@ -145,15 +154,18 @@ async def create_oauth2_credential_provider(request: Request, body: dict) -> dic
     secret_path = f"credential-providers/{name}"
     await bao.kv_put(secret_path, {"clientSecret": cfg["clientSecret"]})
     hierarchy = body.get("x-playground", {}).get("scopeHierarchy", [])
+    verify = body.get("x-playground", {}).get("verifyIdentity")
     async with db.pool.connection() as conn:
         await conn.execute(
-            """insert into credential_providers values (%s, 'CustomOauth2', %s, %s, %s, %s, %s, %s, now())
+            """insert into credential_providers(name, vendor, issuer, authorization_endpoint, token_endpoint,
+                 client_id, client_secret_path, scope_hierarchy, verify_identity)
+               values (%s, 'CustomOauth2', %s, %s, %s, %s, %s, %s, %s)
                on conflict (name) do update set issuer = excluded.issuer,
                  authorization_endpoint = excluded.authorization_endpoint, token_endpoint = excluded.token_endpoint,
                  client_id = excluded.client_id, client_secret_path = excluded.client_secret_path,
-                 scope_hierarchy = excluded.scope_hierarchy""",
+                 scope_hierarchy = excluded.scope_hierarchy, verify_identity = excluded.verify_identity""",
             (name, meta.get("issuer"), meta["authorizationEndpoint"], meta["tokenEndpoint"], cfg["clientId"],
-             secret_path, hierarchy))
+             secret_path, hierarchy, Jsonb(verify) if verify else None))
     ledger.emit(SERVICE, "control.credential_provider", name=name, client_id=cfg["clientId"],
                 secret_ref=f"bao:secret/{secret_path}")
     return {"name": name, "credentialProviderArn": f"arn:playground:identity:oauth2credentialprovider/{name}",
@@ -391,8 +403,9 @@ async def oauth2_callback(request: Request) -> Response:
 async def complete_resource_token_auth(request: Request, body: dict) -> dict:
     await _caller(request, "CompleteResourceTokenAuth")
     uri, ident = body.get("sessionUri", ""), body.get("userIdentifier") or {}
+    user_claims: dict = {}
     if "userToken" in ident:
-        user_id = await _user_id_from_token(ident["userToken"], "T2", "CompleteResourceTokenAuth")
+        user_id, user_claims = await _user_from_token(ident["userToken"], "T2", "CompleteResourceTokenAuth")
     elif "userId" in ident:
         user_id = ident["userId"]
     else:
@@ -409,6 +422,7 @@ async def complete_resource_token_auth(request: Request, body: dict) -> dict:
         if s["expires_at"] < _now():
             await conn.execute(wipe, ("FAILED", "session_expired", uri))
             raise ApiError(400, "ValidationException", "session expired")
+        verify_failed = None
         if user_id != s["user_id"]:
             # B13: whoever finished the consent is not who started it (consent hijack, S9).
             await conn.execute(wipe, ("FAILED", "binding_mismatch", uri))
@@ -417,22 +431,55 @@ async def complete_resource_token_auth(request: Request, body: dict) -> dict:
         else:
             t = await bao.open(f"pending|{uri}", s["pending_wrapped_dek"], access=s["pending_access_ct"],
                                refresh=s["pending_refresh_ct"])
+            provider = await _provider(s["provider_name"])
+            downstream_user, problem = await _verify_downstream(provider, t["access"], user_claims)
+            if problem:
+                # §5.2 verify mode: the Jira account that consented is not the one this user should have,
+                # e.g. alice approved while her browser was logged in to Jira as bob (S10).
+                await conn.execute(wipe, ("FAILED", "downstream_identity_mismatch", uri))
+                ledger.emit(SERVICE, "binding.downstream_mismatch", token=uri, label="T6", user_id=user_id,
+                            **problem)
+                verify_failed = problem
+        if user_id == s["user_id"] and not verify_failed:
             key = (s["workload_name"], s["user_id"], s["provider_name"])
             wrapped, ct = await bao.seal(_vault_aad(*key), access=t["access"], refresh=t["refresh"])
             await conn.execute(
-                """insert into token_vault(workload_name, user_id, provider_name, scopes, access_ct, refresh_ct,
-                     wrapped_dek, access_expires_at) values (%s, %s, %s, %s, %s, %s, %s, %s)
+                """insert into token_vault(workload_name, user_id, provider_name, scopes, downstream_user, access_ct,
+                     refresh_ct, wrapped_dek, access_expires_at) values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                    on conflict (workload_name, user_id, provider_name) do update set scopes = excluded.scopes,
-                     access_ct = excluded.access_ct, refresh_ct = excluded.refresh_ct,
-                     wrapped_dek = excluded.wrapped_dek, access_expires_at = excluded.access_expires_at,
-                     refresh_rotated_at = null, updated_at = now()""",
-                (*key, s["pending_scopes"], ct["access"], ct["refresh"], wrapped, s["pending_expires_at"]))
+                     downstream_user = excluded.downstream_user, access_ct = excluded.access_ct,
+                     refresh_ct = excluded.refresh_ct, wrapped_dek = excluded.wrapped_dek,
+                     access_expires_at = excluded.access_expires_at, refresh_rotated_at = null, updated_at = now()""",
+                (*key, s["pending_scopes"], downstream_user, ct["access"], ct["refresh"], wrapped,
+                 s["pending_expires_at"]))
             await conn.execute(wipe, ("COMPLETED", None, uri))
-            ledger.emit(SERVICE, "binding.ok", token=uri, label="T6", user_id=user_id)
+            ledger.emit(SERVICE, "binding.ok", token=uri, label="T6", user_id=user_id, downstream_user=downstream_user)
             ledger.emit(SERVICE, "vault.store", token=t["access"], label="T4", user_id=user_id,
                         provider=s["provider_name"], scopes=s["pending_scopes"], dek=wrapped[:9] + "…")
             return {}
-    raise ApiError(403, "AccessDeniedException", "user does not match the user who started this session")
+    if verify_failed:
+        raise ApiError(403, "AccessDeniedException",
+                       "the downstream account that approved access is not the one expected for this user",
+                       reason="downstream_identity_mismatch")
+    raise ApiError(403, "AccessDeniedException", "user does not match the user who started this session",
+                   reason="binding_mismatch")
+
+
+async def _verify_downstream(provider: dict, t4: str, user_claims: dict) -> tuple[str | None, dict | None]:
+    """Verify mode (SPEC §5.2). Returns (downstream username, problem or None). With no verify config for the
+    provider, or IDENTITY_VERIFY_DOWNSTREAM=false, it only records who consented. It fails closed when the
+    expected value is unknown (e.g. binding by userId, or the user has no attribute)."""
+    v = provider.get("verify_identity") or {}
+    if not v:
+        return None, None
+    r = await http.get(v["url"], headers={"Authorization": f"Bearer {t4}"})
+    actual = r.json().get(v["field"]) if r.status_code == 200 else None
+    if not VERIFY_DOWNSTREAM:
+        return actual, None
+    expected = user_claims.get(v["claim"])
+    if actual is None or expected is None or actual != expected:
+        return actual, {"expected": expected, "actual": actual, "claim": v["claim"]}
+    return actual, None
 
 
 # ------------------------------------------------------------------ playground extension: downstream rejected a T4 (C6)

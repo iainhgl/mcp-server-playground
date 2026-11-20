@@ -57,7 +57,12 @@ def main() -> None:
             "clientSecret": os.environ["JIRA_OAUTH_CLIENT_SECRET"],
         }},
         # Playground extension (not an AgentCore field): Jira scopes are hierarchical.
-        "x-playground": {"scopeHierarchy": ["READ", "WRITE", "ADMIN", "SYSTEM_ADMIN"]},
+        "x-playground": {
+            "scopeHierarchy": ["READ", "WRITE", "ADMIN", "SYSTEM_ADMIN"],
+            # §5.2 verify mode: the Jira account that consented must equal the user's jira_username claim.
+            "verifyIdentity": {"url": "https://jira.localtest.me/rest/api/2/myself", "field": "name",
+                               "claim": "jira_username"},
+        },
     })
     print(f"[identity-init] workload gateway + provider jira-dc ready; callbackUrl={out['callbackUrl']}", flush=True)
 

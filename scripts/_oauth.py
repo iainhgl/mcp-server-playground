@@ -158,7 +158,7 @@ def follow_consent(http: httpx.Client, url: str, user: str, stop_prefix: str, de
 
 
 def browse(http: httpx.Client, url: str, user: str, jira_user: str | None = None, method: str = "GET",
-           data: dict | None = None) -> dict:
+           data: dict | None = None, jira_decision: str = "allow") -> dict:
     """Be the user's browser from `url` until a page with no Keycloak/Jira form: log in at Keycloak
     (`username`) or Jira (`os_username`) when asked, and approve consent screens (`accept` / `decision`).
     Returns {'url', 'status', 'text', 'prompts': [...]}. 'prompts' lists the login pages actually shown."""
@@ -186,7 +186,7 @@ def browse(http: httpx.Client, url: str, user: str, jira_user: str | None = None
             fields["accept"] = form["fields"]["accept"] or "Yes"
             out["prompts"].append(f"consent@{host}")
         if "decision" in form["fields"]:
-            fields["decision"] = "allow"
+            fields["decision"] = jira_decision
             out["prompts"].append(f"consent@{host}")
         r = http.post(urljoin(str(r.url), form["action"]), data=fields)
     return out | {"url": str(r.url), "status": r.status_code, "text": r.text, "error": "too many steps"}

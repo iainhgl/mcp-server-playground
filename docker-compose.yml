@@ -151,6 +151,8 @@ services:
       GATEWAY_SVC_CLIENT_SECRET: ${GATEWAY_SVC_CLIENT_SECRET}
       # Overrides consentSignal in gateway.yaml (auto | tool_error | url_elicitation). Empty = use the file.
       GATEWAY_CONSENT_SIGNAL: ${GATEWAY_CONSENT_SIGNAL:-}
+      # Overrides introspection.enabled in gateway.yaml (true | false). Empty = use the file.
+      GATEWAY_INTROSPECT: ${GATEWAY_INTROSPECT:-}
       LEDGER_DATABASE_URL: postgresql://ledger_writer:${LEDGER_WRITER_PASSWORD}@postgres:5432/ledger
     volumes:
       - caddy-data:/caddy-data:ro

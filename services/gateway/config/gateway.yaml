@@ -13,6 +13,10 @@ authorizers:
     # Tighten later with a pattern, or by pre-registering clients (as Entra will require).
     allowedClients: ["*"]
 
+# Optional RFC 7662 introspection of every inbound T1, cached per token (S17: catches disabled users and
+# revoked sessions before `exp`). Env GATEWAY_INTROSPECT=true|false overrides it.
+introspection: { enabled: false, cacheSeconds: 30 }
+
 # ≈ AgentCore Identity, which AgentCore Gateway calls internally. Here the gateway calls it over HTTPS
 # with its own service token (gateway-svc, T7 ≈ IAM role). The secret comes from env GATEWAY_SVC_CLIENT_SECRET.
 identity:

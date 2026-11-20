@@ -12,6 +12,7 @@
 
 import asyncio
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,10 @@ CONFIG = yaml.safe_load(Path(os.environ.get("GATEWAY_CONFIG", "/app/config/gatew
 RESOURCE: str = CONFIG["resource"]
 REQUIRED_SCOPES: list[str] = CONFIG.get("required_scopes", [])
 PUBLIC_HOST = RESOURCE.split("/")[2]
+# Optional per-request introspection (S17). AgentCore's JWT authorizer validates locally, so it's off by default.
+INTROSPECT = {"enabled": False, "cacheSeconds": 30} | CONFIG.get("introspection", {})
+if os.environ.get("GATEWAY_INTROSPECT"):
+    INTROSPECT["enabled"] = os.environ["GATEWAY_INTROSPECT"].lower() == "true"
 
 
 class GatewayTokenVerifier:
@@ -55,6 +60,24 @@ class GatewayTokenVerifier:
             ],
             async_client(),
         )
+        self._http = async_client()
+        self._introspected: dict[str, tuple[bool, float]] = {}
+
+    async def _active(self, token: str, claims: dict) -> bool:
+        """S17: a JWT stays valid until `exp` even after the user is disabled. Optional RFC 7662
+        introspection asks the IdP whether it's still active, cached per token for cacheSeconds. Keycloak
+        only answers for a client in the token's audience, which is why T1 also names gateway-svc (§6.1)."""
+        key = fingerprint(token)
+        hit = self._introspected.get(key)
+        if hit and time.monotonic() - hit[1] < INTROSPECT["cacheSeconds"]:
+            return hit[0]
+        r = await self._http.post(f"{claims['iss']}/protocol/openid-connect/token/introspect", data={
+            "token": token, "client_id": CONFIG["identity"]["serviceClientId"],
+            "client_secret": os.environ["GATEWAY_SVC_CLIENT_SECRET"]})
+        active = r.status_code == 200 and r.json().get("active") is True
+        self._introspected[key] = (active, time.monotonic())
+        ledger.emit(SERVICE, "inbound.introspected", token=token, label="T1", active=active)
+        return active
 
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
@@ -62,7 +85,12 @@ class GatewayTokenVerifier:
         except AuthzError as e:
             ledger.emit(SERVICE, "inbound.rejected", token=token, label="T1?", reason=e.reason)
             return None
-        ledger.emit(SERVICE, "inbound.validated", token=token, label="T1", claims=claims, authorizer=authorizer)
+        if INTROSPECT["enabled"] and not await self._active(token, claims):
+            ledger.emit(SERVICE, "inbound.rejected", token=token, label="T1", claims=claims,
+                        reason="introspection: inactive (user disabled, session revoked or logged out)")
+            return None
+        ledger.emit(SERVICE, "inbound.validated", token=token, label="T1", claims=claims, authorizer=authorizer,
+                    introspected=INTROSPECT["enabled"] or None)
         return AccessToken(
             token=token,
             client_id=claims.get("azp") or claims.get("client_id") or "",
