@@ -2,7 +2,7 @@
 
 Living status for the build described in [SPEC.md](SPEC.md). The architecture and token-flow view, with per-step verification markers, is in [docs/architecture.md](docs/architecture.md). Update this file in the same commit as the work it describes.
 
-**Current phase:** 6, More clients & sources (not started). Phases 0–5 done
+**Current phase:** 7, Second IdP (not started). Phases 0–6 done (S20 deferred, D4)
 **Last updated:** 2026-11-19
 
 ---
@@ -19,7 +19,7 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done · ⏸ blocked
 | 3. Identity + vault | ✅ | Scripted Flow B without gateway. S9 | `make check3`: 36/36, repeatable, passes after `make down && make up`. The script plays gateway (gateway-svc) and portal (portal-svc + T2) |
 | 4. End-to-end 3LO | ✅ | S3, S4, S5, S8, S15, S18 | `make check4`: 42/42. S4 in Claude Code 2.1.328 (2026-11-20): URL prompt → Jira consent → "I'm done, continue" → results. Five S4 runs found and fixed: the dead-token loop, the lost link on decline, the missing completion notice, and protocol 2026-07-28 consent via InputRequiredResult |
 | 5. Lifecycle & attacks | ✅ | S6, S7, S10–S13, S16, S17, S19 | `make check5`: 22/22. All six checks pass together. Plus the PKCE enforcer and the token-churn analysis |
-| 6. More clients & sources | ⬜ | Confluence tools (S20 deferred, D4) | VS Code + GitHub Copilot deferred: not available on the dev laptop |
+| 6. More clients & sources | ✅ | Confluence tools (S20 deferred, D4) | `make check6`: 20/20. All seven checks pass together. Confluence persona, `confluence-dc` provider, `confluence___search` / `confluence___get_page`, separate consent per product, verify mode, per-product disconnect |
 | 7. Second IdP | ⬜ | Design record + one §12 option working | |
 | 8. AWS port | ⬜ | §11 checklist answered (separate spec) | |
 
@@ -67,6 +67,9 @@ Newest first. Record anything learned while building that differs from or adds t
 
 | Date | Phase | Discovery | Spec impact |
 |---|---|---|---|
+| 2026-11-20 | 6 | **One consent per Atlassian product.** Jira and Confluence DC are separate OAuth providers (separate incoming app links), so a user approves twice and the vault holds two rows. A Jira grant gives no Confluence access. Pre-consent in the portal can connect both up front. Worth knowing for the production UX: with N DC products a user sees N consent screens. | §6.2, §11 R4 |
+| 2026-11-20 | 6 | The portal couldn't name the product it just connected, because `CompleteResourceTokenAuth` returns `{}` (as AgentCore does). The playground adds `x-playground.providerName`. In AWS, your return-URL app would need to track which provider each session was for (e.g. a session→provider map when the gateway starts consent, or a provider-specific return URL). | §6.3, §6.4 |
+| 2026-11-20 | 6 | Confluence and Jira differ in how they hide things: Jira JQL on an unseen project → 400 "does not exist", but Confluence CQL on an unseen space → empty results. Both 404 an unseen item. Tool error handling must cope with both shapes (`errorMessages` vs `message`). | §6.5, stub-fidelity F28–F29 |
 | 2026-11-20 | 5 | **Keycloak 26.8 introspection is audience-restricted:** introspecting T1 as `gateway-svc` returned `active:false` until `gateway-svc` was added to T1's `aud`. Introspection-based revocation checks need the introspecting client to be an audience of the token. | §6.1 |
 | 2026-11-20 | 5 | **Verify mode belongs at binding, not at the callback.** At the callback identity only knows who *started* the flow. At binding it has the finishing user's verified T2 (with `jira_username`), and the check covers gateway-triggered and portal pre-consent flows alike. It fails closed when the expected value is unknown. | §5.2, §6.3 |
 | 2026-11-20 | 5 | **The portal showed the wrong explanation:** it turned *every* 403 from identity into "a different user started this". `check5` (S10) caught it. Identity now returns `reason` codes, and the portal words each case. | §6.3, §6.4 |
@@ -126,10 +129,10 @@ Newest first. Record anything learned while building that differs from or adds t
 Caddy 2.11.8 · Postgres 16.16 · psycopg 3.3.9 · cryptography 50.0.2 · Keycloak 26.8.1 · OpenBao 2.7.1 · mitmproxy 12.3.0 · uv 0.13.8 (python 3.12, trixie) · mcp 2.3.0 · httpx2 2.16.2 · PyJWT 2.15.1 · uvicorn 0.54.0
 
 ## How to run
-After a reboot, run `colima start` first (the Docker runtime). Then `make up` → `make trust` (once) → `make check` (all phases) or `make check0` … `check5`. Toggles: `make consent-signal MODE=…`; `GATEWAY_INTROSPECT=true docker compose up -d gateway`. Portal: https://portal.localtest.me (Connected apps, Token ledger). Identity admin view: `curl -H "X-Identity-Admin: $IDENTITY_ADMIN_TOKEN" https://identity.localtest.me/admin/vault`. Jira stub UI: https://jira.localtest.me/secure/ViewProfile.jspa (Jira users alice / bob / carol.w). `make ledger` follows token events. `make claude` starts Claude Code trusting the local CA. `make claude ARGS=--continue` resumes the previous session with the same trust. `make help` lists all targets. Credentials are in `.env` (generated by `make env`). Seed users: alice/bob/carol/dave with `SEED_USER_PASSWORD`.
+After a reboot, run `colima start` first (the Docker runtime). Then `make up` → `make trust` (once) → `make check` (all phases) or `make check0` … `check6`. Toggles: `make consent-signal MODE=…`; `GATEWAY_INTROSPECT=true docker compose up -d gateway`. Portal: https://portal.localtest.me (Connected apps, Token ledger). Identity admin view: `curl -H "X-Identity-Admin: $IDENTITY_ADMIN_TOKEN" https://identity.localtest.me/admin/vault`. Jira stub UI: https://jira.localtest.me/secure/ViewProfile.jspa (Jira users alice / bob / carol.w). `make ledger` follows token events. `make claude` starts Claude Code trusting the local CA. `make claude ARGS=--continue` resumes the previous session with the same trust. `make help` lists all targets. Credentials are in `.env` (generated by `make env`). Seed users: alice/bob/carol/dave with `SEED_USER_PASSWORD`.
 
 ## Next up
-- Phase 6: the Confluence persona of the stub (:1990, spaces ENG/OPS, separate app link + consent) + `confluence___search` / `confluence___get_page` tools through the same vault path. S20 (Copilot) deferred, D4.
+- Phase 7: second IdP. Decide among §12 options A (RH SSO brokers Entra), B (gateway trusts both issuers) and C (one gateway per IdP). Imitate Entra with a second Keycloak realm `entra-sim` (Entra-shaped claims `oid`/`tid`/`upn`, v2 `aud`, no DCR → pre-registered `mcp-public`). Needs a custom PRM route listing both issuers (SDK PRM lists one).
 - **You (any time):** next time Claude Code has to log in again (not just refresh), confirm it still works with PKCE enforced. That's evidence it sends PKCE.
 - Backlog: decide the `offline_access` policy for MCP clients (realm offline-session idle/max). An IdP lifecycle hook to purge a disabled user's vault rows. Optional S4 comparison `make consent-signal MODE=tool_error`. R7 refresh-rotation settings.
 - Then phase 5: lifecycle and attacks through the gateway (S6, S7, S10, S11, S13, S16, S17). Backlog: PKCE enforcer, offline_access policy, Claude Code token churn, verify mode (§5.2).

@@ -32,4 +32,8 @@ How to check: use the real instance's UI and `curl` against its REST API, with a
 | F24 | `/rest/api/2/myself`, `/search` (GET + POST), `/issue/{key}`, `/issue/{key}/comment` response shapes (spot-check field names) | `app.py` | | ⬜ |
 | F25 | Consent screen: wording, shown on every authorize or only the first time? | `consent` | | ⬜ |
 | F26 | Jira login identity vs SSO identity: same directory (AD)? Same usernames? (affects SPEC §5 verify mode, R6) | `seed.USERS` | | ⬜ |
-| F27 | Confluence: same provider endpoints and behaviour, a separate app link, separate consent | (phase 6) | | ⬜ |
+| F27 | Confluence: same provider endpoints and behaviour, a separate app link, separate consent | `PERSONA=confluence` | | ⬜ |
+| F28 | Confluence CQL on a space you can't see returns **no results** (not an error, unlike Jira JQL) | `cql.py` | | ⬜ |
+| F29 | Confluence content you can't see → 404 `{"statusCode":404,"message":"No content found with id: ContentId{id=…}"}` | `cf_get_content` | | ⬜ |
+| F30 | `/rest/api/user/current` returns `username` = the directory login (used for verify mode) | `cf_current_user` | | ⬜ |
+| F31 | Confluence and Jira usernames are the same directory login (one AD), so one `jira_username` claim serves both | `seed.USERS` | | ⬜ |

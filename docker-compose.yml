@@ -4,6 +4,7 @@
 # Phase 2: jira (Atlassian DC stub: OAuth 2.0 provider + REST v2 subset).
 # Phase 3: identity (+ identity-init): workload identity, token vault, 3LO, session binding.
 # Phase 4: gateway Jira tools, portal, ledger DB (db-init), mitmproxy token labeler.
+# Phase 6: confluence (stub persona) + confluence___* tools.
 
 name: mcp-playground
 
@@ -206,6 +207,8 @@ services:
       IDENTITY_ADMIN_TOKEN: ${IDENTITY_ADMIN_TOKEN}
       JIRA_OAUTH_CLIENT_ID: ${JIRA_OAUTH_CLIENT_ID}
       JIRA_OAUTH_CLIENT_SECRET: ${JIRA_OAUTH_CLIENT_SECRET}
+      CONFLUENCE_OAUTH_CLIENT_ID: ${CONFLUENCE_OAUTH_CLIENT_ID}
+      CONFLUENCE_OAUTH_CLIENT_SECRET: ${CONFLUENCE_OAUTH_CLIENT_SECRET}
     volumes:
       - uv-cache:/root/.cache/uv
       - ./infra/identity:/bootstrap:ro
@@ -225,6 +228,7 @@ services:
       PORTAL_SVC_CLIENT_SECRET: ${PORTAL_SVC_CLIENT_SECRET}
       PORTAL_COOKIE_KEY: ${PORTAL_COOKIE_KEY}
       LEDGER_READ_URL: postgresql://portal:${PG_PORTAL_PASSWORD}@postgres:5432/ledger
+      PROVIDERS: jira-dc,confluence-dc
       LEDGER_DATABASE_URL: postgresql://ledger_writer:${LEDGER_WRITER_PASSWORD}@postgres:5432/ledger
       CA_FILES: /caddy-data/caddy/pki/authorities/local/root.crt:/mitm/mitmproxy-ca-cert.pem
       HTTPS_PROXY: http://mitmproxy:8080
@@ -268,6 +272,33 @@ services:
       retries: 20
     networks: [mesh]
 
+  confluence:
+    # Confluence DC stub (SPEC §6.5): same codebase, persona "confluence", its own state and app link.
+    build:
+      context: .
+      dockerfile: services/atlassian-stub/Dockerfile
+    environment:
+      PERSONA: confluence
+      PORT: "1990"
+      BASE_URL: https://confluence.localtest.me
+      STUB_DB: /data/stub.db
+      LEDGER_DATABASE_URL: postgresql://ledger_writer:${LEDGER_WRITER_PASSWORD}@postgres:5432/ledger
+      SEED_USER_PASSWORD: ${SEED_USER_PASSWORD}
+      STUB_ADMIN_TOKEN: ${STUB_ADMIN_TOKEN}
+      # The incoming application link a Jira admin would create (SPEC §6.5).
+      OAUTH_CLIENT_ID: ${CONFLUENCE_OAUTH_CLIENT_ID}
+      OAUTH_CLIENT_SECRET: ${CONFLUENCE_OAUTH_CLIENT_SECRET}
+      OAUTH_CLIENT_NAME: MCP Gateway (playground)
+      OAUTH_REDIRECT_URI: https://identity.localtest.me/identities/oauth2/callback
+      OAUTH_SCOPE: WRITE
+    volumes:
+      - confluence-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:1990/healthz')"]
+      interval: 3s
+      retries: 20
+    networks: [mesh]
+
   mitmproxy:
     image: mitmproxy/mitmproxy:12.3.0
     command:
@@ -299,3 +330,4 @@ volumes:
   bao-data: {}
   uv-cache: {}
   jira-data: {}
+  confluence-data: {}

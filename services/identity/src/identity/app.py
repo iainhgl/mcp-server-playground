@@ -456,7 +456,8 @@ async def complete_resource_token_auth(request: Request, body: dict) -> dict:
             ledger.emit(SERVICE, "binding.ok", token=uri, label="T6", user_id=user_id, downstream_user=downstream_user)
             ledger.emit(SERVICE, "vault.store", token=t["access"], label="T4", user_id=user_id,
                         provider=s["provider_name"], scopes=s["pending_scopes"], dek=wrapped[:9] + "…")
-            return {}
+            # AgentCore returns {}. The playground adds which provider was bound, so the portal can say so.
+            return {"x-playground": {"providerName": s["provider_name"]}}
     if verify_failed:
         raise ApiError(403, "AccessDeniedException",
                        "the downstream account that approved access is not the one expected for this user",

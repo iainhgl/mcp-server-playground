@@ -3,14 +3,14 @@ COMPOSE := docker compose
 CADDY_ROOT := certs/caddy-root.crt
 HOSTS := idp gateway identity portal jira confluence
 
-.PHONY: help env up down nuke ps logs trust untrust hosts check check0 check1 check2 check3 check4 check5 bootstrap claude ledger consent-signal
+.PHONY: help env up down nuke ps logs trust untrust hosts check check0 check1 check2 check3 check4 check5 check6 bootstrap claude ledger consent-signal
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
 
 RANDOM_KEYS := POSTGRES_PASSWORD PG_KEYCLOAK_PASSWORD PG_IDENTITY_PASSWORD PG_PORTAL_PASSWORD \
 	KC_ADMIN_PASSWORD PORTAL_CLIENT_SECRET GATEWAY_SVC_CLIENT_SECRET MITM_WEB_PASSWORD \
-	STUB_ADMIN_TOKEN JIRA_OAUTH_CLIENT_ID JIRA_OAUTH_CLIENT_SECRET \
+	STUB_ADMIN_TOKEN JIRA_OAUTH_CLIENT_ID JIRA_OAUTH_CLIENT_SECRET CONFLUENCE_OAUTH_CLIENT_ID CONFLUENCE_OAUTH_CLIENT_SECRET \
 	IDENTITY_ADMIN_TOKEN IDENTITY_WAT_KEY PORTAL_SVC_CLIENT_SECRET PORTAL_COOKIE_KEY LEDGER_WRITER_PASSWORD
 
 env: ## Create .env, or add keys new phases need (existing values are kept)
@@ -60,7 +60,7 @@ hosts: ## Offline fallback: add *.localtest.me to /etc/hosts (sudo)
 certs-local:
 	@test -f $(CADDY_ROOT) || $(COMPOSE) cp caddy:/data/caddy/pki/authorities/local/root.crt $(CADDY_ROOT)
 
-check: check0 check1 check2 check3 check4 check5 ## Run every phase's exit-criteria checks
+check: check0 check1 check2 check3 check4 check5 check6 ## Run every phase's exit-criteria checks
 
 check0: certs-local ## Phase 0 check: IdP, DCR, PKCE, audience scoping
 	@set -a; source .env; set +a; uv run --script scripts/phase0_check.py
@@ -79,6 +79,9 @@ check4: certs-local ## Phase 4 check: end to end via gateway + portal (S3 S5 S8 
 
 check5: certs-local ## Phase 5 check: refresh/concurrency via gateway, verify mode, step-up deny, user disable, PKCE
 	@set -a; source .env; set +a; uv run --script scripts/phase5_check.py
+
+check6: certs-local ## Phase 6 check: Confluence persona + tools, separate consent, per-user spaces
+	@set -a; source .env; set +a; uv run --script scripts/phase6_check.py
 
 claude: certs-local ## Start Claude Code trusting the local CA (resume: make claude ARGS=--continue)
 	NODE_EXTRA_CA_CERTS=$(CURDIR)/$(CADDY_ROOT) claude $(ARGS)

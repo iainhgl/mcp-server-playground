@@ -42,6 +42,7 @@ IDENTITY = os.environ.get("IDENTITY_URL", "https://identity.localtest.me/identit
 WORKLOAD = os.environ.get("WORKLOAD_NAME", "gateway")
 RETURN_URL = f"{PUBLIC_URL}/oauth/return"
 PROVIDERS = os.environ.get("PROVIDERS", "jira-dc").split(",")
+PRODUCT_NAMES = {"jira-dc": "Jira", "confluence-dc": "Confluence"}
 COOKIE_KEY = os.environ["PORTAL_COOKIE_KEY"].encode()
 LEDGER_READ_URL = os.environ["LEDGER_READ_URL"]
 SESSION_TTL = 1800
@@ -166,7 +167,8 @@ async def _bind(session_uri: str, t2: str, user: dict) -> Response:
                                   {"sessionUri": session_uri, "userIdentifier": {"userToken": t2}})
     ledger.emit(SERVICE, "binding.requested", token=session_uri, label="T6", user=user["name"], status=status)
     if status == 200:
-        return HTMLResponse(views.result(user, True, "Jira connected",
+        product = PRODUCT_NAMES.get((out.get("x-playground") or {}).get("providerName", ""), "Account")
+        return HTMLResponse(views.result(user, True, f"{product} connected",
                                          "You can close this tab and ask your assistant again."))
     msg = out.get("message", "")
     if out.get("reason") == "binding_mismatch":

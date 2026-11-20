@@ -64,7 +64,28 @@ def main() -> None:
                                "claim": "jira_username"},
         },
     })
-    print(f"[identity-init] workload gateway + provider jira-dc ready; callbackUrl={out['callbackUrl']}", flush=True)
+    call("CreateOauth2CredentialProvider", {
+        "name": "confluence-dc",
+        "credentialProviderVendor": "CustomOauth2",
+        "oauth2ProviderConfigInput": {"customOauth2ProviderConfig": {
+            "oauthDiscovery": {"authorizationServerMetadata": {
+                "issuer": "https://confluence.localtest.me",
+                "authorizationEndpoint": "https://confluence.localtest.me/rest/oauth2/latest/authorize",
+                "tokenEndpoint": "https://confluence.localtest.me/rest/oauth2/latest/token",
+                "responseTypes": ["code"],
+            }},
+            "clientId": os.environ["CONFLUENCE_OAUTH_CLIENT_ID"],
+            "clientSecret": os.environ["CONFLUENCE_OAUTH_CLIENT_SECRET"],
+        }},
+        "x-playground": {
+            "scopeHierarchy": ["READ", "WRITE", "ADMIN", "SYSTEM_ADMIN"],
+            # Same directory username as Jira (one AD in production), so the same claim is used.
+            "verifyIdentity": {"url": "https://confluence.localtest.me/rest/api/user/current", "field": "username",
+                               "claim": "jira_username"},
+        },
+    })
+    print(f"[identity-init] workload gateway + providers jira-dc, confluence-dc ready; callbackUrl={out['callbackUrl']}",
+          flush=True)
 
 
 if __name__ == "__main__":

@@ -96,3 +96,59 @@ ISSUES = {
 
 def visible_projects(username: str) -> set[str]:
     return {k for k, p in PROJECTS.items() if username in p.members}
+
+
+# ---- Confluence persona ---------------------------------------------------
+
+@dataclass(frozen=True)
+class Space:
+    key: str
+    id: str
+    name: str
+    members: frozenset[str]  # usernames with VIEWSPACE
+
+
+@dataclass(frozen=True)
+class Page:
+    id: str
+    space: str
+    title: str
+    body: str  # storage format (XHTML)
+    author: str
+    created: str
+    version: int = 1
+
+
+SPACES = {
+    s.key: s
+    for s in [
+        Space("ENG", "98305", "Engineering", frozenset({"alice"})),
+        Space("OPS", "98306", "Operations", frozenset({"bob"})),
+        # carol.w has a Confluence account but no space permissions; dave has no account at all.
+    ]
+}
+
+PAGES = {
+    p.id: p
+    for p in [
+        Page("65601", "ENG", "Architecture overview",
+             "<p>The platform runs behind an MCP gateway. Tokens never reach the assistant.</p>",
+             "alice", "2026-10-01T09:00:00.000Z", 3),
+        Page("65602", "ENG", "Onboarding checklist",
+             "<ul><li>Request Jira access</li><li>Read the architecture overview</li></ul>",
+             "alice", "2026-10-05T10:30:00.000Z"),
+        Page("65603", "ENG", "Token handling standards",
+             "<p>Log fingerprints, never raw tokens. Envelope-encrypt anything at rest.</p>",
+             "alice", "2026-10-12T14:00:00.000Z", 2),
+        Page("65701", "OPS", "On-call runbook",
+             "<p>Pager alerts route to the primary on-call. Escalate after 15 minutes.</p>",
+             "bob", "2026-09-20T08:00:00.000Z", 5),
+        Page("65702", "OPS", "OpenBao unseal procedure",
+             "<p>After a node restart, unseal with the shared key, then wait for raft leadership.</p>",
+             "bob", "2026-10-02T16:45:00.000Z"),
+    ]
+}
+
+
+def visible_spaces(username: str) -> set[str]:
+    return {k for k, s in SPACES.items() if username in s.members}

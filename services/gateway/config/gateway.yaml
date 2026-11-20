@@ -32,5 +32,11 @@ consentSignal: auto
 # ≈ AgentCore Gateway targets: tool names are <target>___<tool>.
 targets:
   - name: jira
+    displayName: Jira
     baseUrl: https://jira.localtest.me
     credentialProvider: { name: jira-dc, type: oauth2, flow: USER_FEDERATION }
+  # A separate product = a separate app link = a separate consent and vault row (SPEC §11 R4).
+  - name: confluence
+    displayName: Confluence
+    baseUrl: https://confluence.localtest.me
+    credentialProvider: { name: confluence-dc, type: oauth2, flow: USER_FEDERATION }

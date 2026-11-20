@@ -28,6 +28,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 
 from atlassian_stub import pages, seed
+from atlassian_stub.cql import CqlError, compile_cql
 from atlassian_stub.jql import JqlError, compile_jql
 from atlassian_stub.store import Store
 
@@ -471,6 +472,66 @@ routes = [
     Route("/_stub/revoke-all", admin_revoke_all, methods=["POST"]),
     Route("/_stub/state", admin_state, methods=["GET"]),
 ]
+# ---------------------------------------------------------------- Confluence REST subset (persona "confluence")
+
+def _space_json(key: str) -> dict[str, Any]:
+    sp = seed.SPACES[key]
+    return {"id": int(sp.id), "key": sp.key, "name": sp.name, "type": "global"}
+
+
+def _page_json(p: seed.Page, with_body: bool = False) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "id": p.id, "type": "page", "status": "current", "title": p.title, "space": _space_json(p.space),
+        "version": {"number": p.version, "by": _cf_user_json(p.author), "when": p.created},
+        "_links": {"webui": f"/pages/viewpage.action?pageId={p.id}", "self": f"{BASE_URL}/rest/api/content/{p.id}"},
+    }
+    if with_body:
+        out["body"] = {"storage": {"value": p.body, "representation": "storage"}}
+    return out
+
+
+def _cf_user_json(name: str) -> dict[str, Any]:
+    u = seed.USERS[name]
+    return {"type": "known", "username": u.name, "userKey": u.key, "displayName": u.display_name}
+
+
+@api("READ")
+async def cf_current_user(_: Request, caller: Caller) -> Response:
+    return JSONResponse(_cf_user_json(caller.username))
+
+
+@api("READ")
+async def cf_search(request: Request, caller: Caller) -> Response:
+    qp = request.query_params
+    start, limit = int(qp.get("start", 0)), min(int(qp.get("limit", 25)), 100)
+    try:
+        pred = compile_cql(qp.get("cql", ""))
+    except CqlError as e:
+        return JSONResponse({"statusCode": 400, "message": str(e)}, status_code=400)
+    visible = seed.visible_spaces(caller.username)
+    hits = [p for p in seed.PAGES.values() if p.space in visible and pred(p)]
+    page = hits[start:start + limit]
+    return JSONResponse({"results": [_page_json(p) for p in page], "start": start, "limit": limit,
+                         "size": len(page), "totalSize": len(hits), "_links": {"base": BASE_URL}})
+
+
+@api("READ")
+async def cf_get_content(request: Request, caller: Caller) -> Response:
+    p = seed.PAGES.get(request.path_params["id"])
+    if not p or p.space not in seed.visible_spaces(caller.username):
+        # Confluence doesn't reveal whether content you can't see exists.
+        return JSONResponse({"statusCode": 404, "message": "No content found with id: "
+                             f"ContentId{{id={request.path_params['id']}}}"}, status_code=404)
+    return JSONResponse(_page_json(p, with_body=True))
+
+
+if PERSONA == "confluence":
+    routes += [
+        Route("/rest/api/user/current", cf_current_user, methods=["GET"]),
+        Route("/rest/api/content/search", cf_search, methods=["GET"]),
+        Route("/rest/api/content/{id}", cf_get_content, methods=["GET"]),
+    ]
+
 if PERSONA == "jira":
     routes += [
         Route("/rest/api/2/myself", myself, methods=["GET"]),

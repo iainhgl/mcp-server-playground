@@ -32,3 +32,7 @@ portal.localtest.me {
 jira.localtest.me {
 	reverse_proxy jira:2990
 }
+
+confluence.localtest.me {
+	reverse_proxy confluence:1990
+}

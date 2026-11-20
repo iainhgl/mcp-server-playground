@@ -71,7 +71,7 @@ Disconnecting forgets the tokens here. To cut off an already-issued token immedi
 {rows}</table></div></div>""", user)
 
 
-SERVICES = ["gateway", "identity", "jira-stub", "portal"]
+SERVICES = ["gateway", "identity", "jira-stub", "confluence-stub", "portal"]
 
 
 def ledger(user: dict, events: list[dict], minutes: int, q: str) -> str:

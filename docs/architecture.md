@@ -12,7 +12,7 @@ This is the architecture view of [SPEC.md](../SPEC.md). It covers what exists, w
 
 At the end of each phase, update the markers from that phase's traces (see `CLAUDE.md`). Anything observed that contradicts this document is a discovery: log it, then fix the document *and* the spec.
 
-*Last verified: 2026-11-20 (phase 5: lifecycle and attacks through the gateway, `make check5` 22/22. Earlier: phase 4 end to end + S4 in Claude Code 2.1.328 on MCP 2026-07-28, `check4` 42/42; `check3` identity; `check2` stub)*
+*Last verified: 2026-11-20 (phase 6: Confluence via the same path, `check6` 20/20. Phase 5: lifecycle and attacks through the gateway, `make check5` 22/22. Earlier: phase 4 end to end + S4 in Claude Code 2.1.328 on MCP 2026-07-28, `check4` 42/42; `check3` identity; `check2` stub)*
 
 > **Stub caveat:** a ✅ on a Jira-side step means verified **against the stub**. Whether real Jira DC behaves the same is tracked separately in [stub-fidelity.md](stub-fidelity.md) (F1–F27, all unchecked).
 
@@ -74,6 +74,7 @@ flowchart LR
 | ④ | **Postgres** | `identity` DB: vault ciphertext, OAuth sessions, ledger. `keycloak` DB | Ciphertext + wrapped data keys, fingerprints | Plaintext downstream tokens | ✅ (`check3`: row holds AES-GCM ciphertext + `vault:v1:` wrapped DEK, T4 not present in plaintext) |
 | ④ | **OpenBao** | ≈ KMS (transit key `vault-dek`) + Secrets Manager (KV) | The key that unwraps every vault row (never exported). Client secrets | — | ✅ (`check3`: datakey/unwrap/encrypt via least-privilege `identity` policy token. Jira secret in KV) |
 | ⑤ | **Jira DC** (stub) | Downstream authorization server *and* resource server | Its own grants per Jira user. Token **hashes** only (SQLite) | Plaintext tokens at rest | ✅ phase 2 (stub) |
+| ⑤ | **Confluence DC** (stub persona) | A second downstream authorization server + resource server, with its **own app link** → its own consent (H2) and vault row | Its own grants per Confluence user. Token hashes only | Plaintext tokens at rest | ✅ phase 6 (`check6`) |
 
 **Trust boundaries that matter**
 - **①→③** Only T1 crosses. The gateway trusts nothing about the caller except a valid T1 (signature, `iss`, `aud`, `exp`). ✅
@@ -90,7 +91,7 @@ There are exactly three moments where a person interacts, all in the browser. Ev
 | # | Where | Triggered by | The user proves / grants | What it creates | Repeats when | Status |
 |---|---|---|---|---|---|---|
 | **H1** | Keycloak login + consent (`idp.localtest.me`) | MCP client `/mcp` → Authenticate | *I am alice* + *let "Claude Code (atlassian-playground)" use Atlassian tools through the gateway* (scope `mcp:tools`, plus `offline_access`) | T1 + T1r for (alice, that client). Keycloak stores the consent and an **offline session** | T1r dies (offline session revoked/expired, user disabled), client re-registers, consent revoked | ✅ S2 · **PKCE S256 enforced for every client** (phase 5, `check5`) |
-| **H2** | Jira login + consent (`jira.localtest.me/rest/oauth2/latest/authorize`) | Gateway signals "connect Jira" (consent link) | *I am Jira user alice* + *let the gateway app READ Jira as me* | T4 + T5 for (gateway workload, alice, jira-dc). **This is the identity mapping** (SPEC §5) | T5 dies (revoked in Jira, expired, user removed), step-up to WRITE | ✅ Jira side (stub, `check2`: login, consent allow/deny, WRITE step-up, user without a Jira account fails). ⬜ triggered from a gateway consent link (phase 4) · ✅ **verified mapping (§5.2):** approving as the wrong Jira account → rejected at binding (`check5` S10). `downstream_user` recorded |
+| **H2** | Jira login + consent (`jira.localtest.me/rest/oauth2/latest/authorize`) | Gateway signals "connect Jira" (consent link) | *I am Jira user alice* + *let the gateway app READ Jira as me* | T4 + T5 for (gateway workload, alice, jira-dc). **This is the identity mapping** (SPEC §5) | T5 dies (revoked in Jira, expired, user removed), step-up to WRITE | ✅ Jira side (stub, `check2`: login, consent allow/deny, WRITE step-up, user without a Jira account fails). ⬜ triggered from a gateway consent link (phase 4) · ✅ **verified mapping (§5.2):** approving as the wrong Jira account → rejected at binding (`check5` S10). `downstream_user` recorded | · ✅ **per product:** Confluence needs its own H2. A Jira grant doesn't cover it. Verify mode applies to both (`check6`) |
 | **H3** | Portal return (`portal.localtest.me/oauth/return`) | Redirect from identity after H2 | *The person finishing this consent is still alice* (OIDC login, usually silent through the H1 SSO cookie) | T2, then a `CompleteResourceTokenAuth` call that commits T4/T5 to the vault | Every H2 | ✅ real portal (`check4`): the user saw only `login@jira` + `consent@jira`, and **the portal's Keycloak login was silent**. ⬜ with Claude Code (`offline_access` login, real browser): S4 |
 
 H1 is about the **MCP client**: the user trusts a program to act for them at the gateway. H2 is about the **gateway**: the user trusts it to act for them at Jira. They are separate grants, revoked separately, and neither implies the other.

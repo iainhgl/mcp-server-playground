@@ -102,6 +102,7 @@ class Target:
 
     def __init__(self, cfg: dict[str, Any], identity: Identity):
         self.name, self.base = cfg["name"], cfg["baseUrl"].rstrip("/")
+        self.display_name = cfg.get("displayName", self.name)
         self.provider = cfg["credentialProvider"]["name"]
         self.identity = identity
 
