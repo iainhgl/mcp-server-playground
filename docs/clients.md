@@ -60,9 +60,9 @@ SPEC §6.7. Record what each real client actually does here (S2, S4, S20).
 | Declares `elicitation.url`? (ledger `consent.signalled mode=`) | **Yes**: `mode=url_elicitation` (run 1, 16:52–16:55) |
 | How the consent link was presented | URL-elicitation prompt (-32042) showing the long URL. **Enter = decline** (run 3). Declined → Claude Code doesn't pass the error message on, so the link never reaches the chat (run 2). Opening the URL from the prompt (copy/Cmd-click) → Jira consent → binding ✅ (run 3, 10:26) |
 | Protocol negotiated | **2026-07-28** (ledger `consent.signalled protocol=`) |
-| After consent completed | Run 4: *"Waiting for the server to confirm completion… ❯ Reopen URL / Retry now / Cancel"*. That's the 2026-07-28 flow: the client expects to **retry**. **Retry now → results** ✅. The gateway now returns `InputRequiredResult` to such clients. Re-test: does Claude Code retry by itself? |
+| After consent completed | Run 4: *"Waiting for the server to confirm completion… ❯ Reopen URL / Retry now / Cancel"*. That's the 2026-07-28 flow: the client expects to **retry**. **Retry now → results** ✅. The gateway now returns `InputRequiredResult` to such clients. Run 5 with InputRequiredResult: Claude Code shows **"Open again / I'm done, continue / Decline"**. "I'm done, continue" retries → results ✅ |
 | `consentSignal: tool_error` (link in chat) | not yet tried |
-| Did the model retry on its own after consent? | (re-test with the completion notification) |
+| Did the model retry on its own after consent? | No: **the user confirms** ("I'm done, continue"), which retries the call. Later calls reuse the vaulted token, even across `/mcp` reconnects |
 | H3: Keycloak login prompt at the portal? | |
-| Result after consent | Via **portal pre-consent** (Connected apps → Connect → Jira login/Allow → 'Jira connected'): the next call returned alice's issues (ALPHA-1, ALPHA-3 assigned to her) ✅ |
+| Result after consent | ✅ via the prompt (run 5). Also ✅ via **portal pre-consent** (Connected apps → Connect → Jira login/Allow → 'Jira connected'): the next call returned alice's issues (ALPHA-1, ALPHA-3 assigned to her) ✅ |
 | WRITE step-up (optional) | |

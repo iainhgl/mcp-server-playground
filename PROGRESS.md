@@ -2,7 +2,7 @@
 
 Living status for the build described in [SPEC.md](SPEC.md). The architecture and token-flow view, with per-step verification markers, is in [docs/architecture.md](docs/architecture.md). Update this file in the same commit as the work it describes.
 
-**Current phase:** 4, End-to-end 3LO (🟨 automated checks pass; waiting on the manual S4 run in Claude Code)
+**Current phase:** 5, Lifecycle & attacks (not started). Phases 0–4 done
 **Last updated:** 2026-11-19
 
 ---
@@ -17,7 +17,7 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done · ⏸ blocked
 | 1. Gateway shell | ✅ | S1, S2, S14: Claude Code connects, `whoami` shows claims | `make check1`: 25/25 (S1 + S14 + session binding + ledger + invariant 6). S2 done in Claude Code 2.1.328. Observations in `docs/clients.md` |
 | 2. Stub downstream | ✅ | Manual PKCE flow returns T4. `/search` filtered per user | `make check2`: 36/36 and repeatable. Jira persona: OAuth provider (PKCE, rotation, both client auth methods, scope hierarchy), login/consent/profile pages, REST v2 subset with Jira-style hiding, PATs, faults. Fidelity assumptions F1–F27 in `docs/stub-fidelity.md` |
 | 3. Identity + vault | ✅ | Scripted Flow B without gateway. S9 | `make check3`: 36/36, repeatable, passes after `make down && make up`. The script plays gateway (gateway-svc) and portal (portal-svc + T2) |
-| 4. End-to-end 3LO | 🟨 | S3, S4, S5, S8, S15, S18 | `make check4`: 30/30. All five checks pass together. **S4 (Claude Code) pending.** Runbook: `docs/clients.md` §S4 |
+| 4. End-to-end 3LO | ✅ | S3, S4, S5, S8, S15, S18 | `make check4`: 42/42. S4 in Claude Code 2.1.328 (2026-11-20): URL prompt → Jira consent → "I'm done, continue" → results. Five S4 runs found and fixed: the dead-token loop, the lost link on decline, the missing completion notice, and protocol 2026-07-28 consent via InputRequiredResult |
 | 5. Lifecycle & attacks | ⬜ | S6, S7, S10–S13, S16, S17, S19 | |
 | 6. More clients & sources | ⬜ | S20, Confluence tools | |
 | 7. Second IdP | ⬜ | Design record + one §12 option working | |
@@ -30,7 +30,7 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done · ⏸ blocked
 | S1 | ✅ | `make check1`: 401 → PRM via `resource_metadata` → RFC 8414 AS metadata → DCR → PKCE with challenge scope → initialize → tools/list → whoami=alice |
 | S2 | ✅ | 2026-11-19, Claude Code 2.1.328: DCR as "Claude Code (atlassian-playground)", browser login + consent as alice, `gateway___whoami` → alice (ledger 14:21:16, azp b8bb83e8…). Details: docs/clients.md |
 | S3 | ✅ | `check4`: first `jira___search_issues` → isError + link → Jira login/consent → identity → portal (silent SSO) → binding → retry → ALPHA only |
-| S4 | 🟨 | Run 4 (2026-11-20, 10:38–10:40): Claude Code negotiates **protocol 2026-07-28**. Prompt → URL opened → consent bound 10:38:05. Claude Code showed *"Waiting for the server to confirm completion… Reopen URL / Retry now"*. The notification we sent doesn't exist in 2026-07-28. **Retry now → results** (10:40:26 `downstream.call` 200) ✅. The gateway now answers 2026-07-28 clients with `InputRequiredResult` (`check4` covers accept/decline/retry). Earlier runs: Enter on the prompt = decline (run 3); portal pre-consent ✅ (run 2). **Re-test with the new code** |
+| S4 | ✅ | Run 5 (2026-11-20): 10:49:31 `tool.call` → `vault.miss` → `consent.signalled mode=input_required protocol=2026-07-28` → user opened the URL, Jira login + Allow → 10:49:37 `binding.ok` → Claude Code **"I'm done, continue"** retry → 10:50:51 `vault.hit` → `downstream.call` 200 → alice's issues. Then reused across reconnects with no new prompt (vault). Earlier runs (1–4) and their fixes: discoveries log. Optional follow-up: compare `consentSignal: tool_error` |
 | S5 | ✅ | `check4`: repeat calls (search, get_issue) with no consent. BETA-1 → 404 tool error, JQL on BETA → 'does not exist' |
 | S6 | 🟨 | Identity level ✅ (`check3`): a stale T4 is refreshed transparently and the rotated T5 stored. Through the gateway: phase 4–5 |
 | S7 | 🟨 | Identity level ✅ (`check3`): 10 concurrent requests → exactly 1 refresh at Jira (row lock), 9 vault hits, same T4. Through the gateway: phase 5 |
@@ -67,6 +67,7 @@ Newest first. Record anything learned while building that differs from or adds t
 
 | Date | Phase | Discovery | Spec impact |
 |---|---|---|---|
+| 2026-11-20 | 4 | **Claude Code's 2026-07-28 URL-elicitation UX:** after the URL is opened it shows *"Open again / ❯ I'm done, continue / Decline"*. The client can't detect when the browser step is finished, so the **user confirms**, and that triggers the retry (`inputResponses` accept). One approval is then reused across MCP reconnects, because the vault is keyed by user, not by MCP session. | §6.2, docs/clients.md |
 | 2026-11-20 | 4 | **Claude Code 2.1.328 negotiates MCP protocol `2026-07-28`**, which changes consent signalling entirely. `notifications/elicitation/complete` was removed, and the SDK silently drops it on such sessions, so our `consent.complete_notified` ledger event was misleading. The replacement: the tool *returns* `InputRequiredResult{inputRequests}`, and the **client retries the call** with `inputResponses`. Claude Code's "Retry now" is that retry. The gateway now picks the mechanism per session protocol. Bonus: in 2026-07-28 the server sees a decline, so it can return the link as text. | §6.2, §11 R2 |
 | 2026-11-20 | 4 | **The 2026-07-28 HTTP transport adds per-request requirements**: `params._meta` must carry `io.modelcontextprotocol/protocolVersion` + `clientCapabilities` (capabilities travel per request now, not only at initialize), and the `Mcp-Method` / `Mcp-Name` headers must match the body (else -32602 / -32020). That matters for anything in front of the gateway (ALB, WAF, API Gateway, Caddy): those headers must pass through. | §6.2, §11 R2 |
 | 2026-11-20 | 4 | The stale S4 line in PROGRESS ("portal is the only path that works") led a Claude Code session to **advise the portal without calling the tool**. Notes the agent reads can steer its behaviour: keep them current. | — |
@@ -122,7 +123,7 @@ Caddy 2.11.8 · Postgres 16.16 · psycopg 3.3.9 · cryptography 50.0.2 · Keyclo
 After a reboot, run `colima start` first (the Docker runtime). Then `make up` → `make trust` (once) → `make check` (all phases) or `make check0` … `check4`. Portal: https://portal.localtest.me (Connected apps, Token ledger). Identity admin view: `curl -H "X-Identity-Admin: $IDENTITY_ADMIN_TOKEN" https://identity.localtest.me/admin/vault`. Jira stub UI: https://jira.localtest.me/secure/ViewProfile.jspa (Jira users alice / bob / carol.w). `make ledger` follows token events. `make claude` starts Claude Code trusting the local CA. `make claude ARGS=--continue` resumes the previous session with the same trust. `make help` lists all targets. Credentials are in `.env` (generated by `make env`). Seed users: alice/bob/carol/dave with `SEED_USER_PASSWORD`.
 
 ## Next up
-- **S4 re-test (you):** (a) `auto`: ask for issues → open the prompt's URL → consent → in Claude Code choose **Retry now** (or see if it retries by itself) → results. The ledger should show `consent.signalled mode=input_required protocol=2026-07-28`. (b) `make consent-signal MODE=tool_error` → Disconnect in the portal → ask again → the link should appear in the chat. Then `make consent-signal` to go back to auto. Older steps: `make claude` (second terminal) → `/mcp` → reconnect `atlassian-playground` if needed → ask "list my Jira issues" → open the link → Jira login (alice) + Allow → "Jira connected" → ask again. Then fill in the S4 table in `docs/clients.md`. Watch: `make ledger`, https://portal.localtest.me/ledger, mitmweb http://localhost:8081.
+- Phase 5: lifecycle and attacks through the gateway (S6, S7, S10, S11, S13, S16, S17). Backlog: PKCE enforcer, `offline_access` policy, Claude Code token churn, verify mode (§5.2), and the optional S4 comparison with `make consent-signal MODE=tool_error`.
 - Then phase 5: lifecycle and attacks through the gateway (S6, S7, S10, S11, S13, S16, S17). Backlog: PKCE enforcer, offline_access policy, Claude Code token churn, verify mode (§5.2).
 - **You (any time):** go through `docs/stub-fidelity.md` against the real Jira DC and record the answers.
 - Backlog (phase 5 hardening): enforce PKCE S256 for all clients through a Keycloak client policy. Decide the `offline_access` policy for MCP clients. Investigate Claude Code's token churn (4 tokens in 22 s).
