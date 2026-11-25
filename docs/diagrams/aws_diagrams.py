@@ -21,6 +21,7 @@ ZONE = "fillColor=#F7F7F7;strokeColor=#999999;dashed=1;fontColor=#333333;"
 NOTE = "fillColor=#EEEEEE;strokeColor=#999999;fontColor=#1A1A1A;"
 GROUP = "fillColor=#F2F2F2;strokeColor=#BBBBBB;fontColor=#555555;"
 TEXT = "text;strokeColor=none;fillColor=none;fontColor=#1A1A1A;"
+MANAGED = "fillColor=#FFFFFF;strokeColor=#AAAAAA;dashed=1;dashPattern=2 3;fontColor=#555555;"
 
 
 class Diagram:
@@ -83,6 +84,8 @@ def boundaries() -> Path:
           "verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;")
 
     # entities
+    d.box(605, 315, 310, 280, "Managed by AgentCore Identity (created automatically; you grant IAM access, you don't provision them)", MANAGED,
+          "verticalAlign=bottom;align=left;spacingLeft=6;spacingBottom=4;fontSize=9;whiteSpace=wrap;")
     browser = d.box(60, 110, 190, 70, "Browser\n(H1 sign-in, H2 Atlassian consent,\nH3 return)")
     mc = d.box(60, 380, 190, 70, "MCP client\n(Claude Code)\nholds T1, T1r")
     idc = d.box(350, 110, 130, 90, "IAM Identity Center\n(AWS access portal\nusers)")
@@ -90,8 +93,8 @@ def boundaries() -> Path:
     ret = d.box(720, 110, 190, 90, "Return-URL app\n(Lambda / ECS)\nIAM role for SigV4")
     gw = d.box(360, 360, 170, 90, "AgentCore Gateway\nCUSTOM_JWT authorizer\n(Cognito discovery URL)\ntargets: jira, confluence")
     ident = d.box(620, 340, 280, 110, "AgentCore Identity\nworkload identity (gateway)\ntoken vault: T4/T5 per\n(workload, user sub, provider)\ncallback endpoint (regional)")
-    kms = d.box(620, 500, 130, 70, "AWS KMS\n(vault encryption)")
-    sm = d.box(770, 500, 130, 70, "Secrets Manager\nT8: Atlassian\nclient secrets")
+    kms = d.box(620, 470, 130, 70, "AWS KMS\nvault encryption\n(AWS-managed key;\nCMK optional)", MANAGED)
+    sm = d.box(770, 470, 130, 70, "Secrets Manager\nT8 secret, created by\nCreateOauth2\nCredentialProvider", MANAGED)
     jira = d.box(1010, 350, 190, 70, "Jira DC\n(OAuth 2.0 provider +\nREST API)")
     conf = d.box(1010, 470, 190, 70, "Confluence DC\n(separate app link,\nseparate consent)")
 
@@ -122,14 +125,16 @@ def boundaries() -> Path:
         "T2     Cognito token for the return-URL app (silent SSO). Used once for binding, never stored.\n"
         "T3     AgentCore workload access token: binds workload (gateway) + user (T1 sub). Internal to AgentCore.\n"
         "T4/T5  Atlassian access / refresh tokens. Only in AgentCore Identity's token vault (KMS); T4 lent to the Gateway per call.\n"
-        "T8     Atlassian OAuth client id/secret (app link) in Secrets Manager.\n"
+        "T8     Atlassian OAuth client secret (app link). AgentCore Identity creates the Secrets Manager secret itself when you\n"
+        "       create the credential provider; the gateway role needs secretsmanager:GetSecretValue on it (auto-added by\n"
+        "       console/CLI). Rotate via UpdateOauth2CredentialProvider, not by editing the secret. KMS likewise is managed.\n"
         "SigV4  Return-URL app's IAM role signing the CompleteResourceTokenAuth call.\n"
         "\n"
         "To verify with AWS: Cognito <- Identity Center SAML federation; Claude Code with a pre-registered client id; "
         "Gateway allowedClients/allowedScopes for Cognito access tokens (no aud); R1 network path to on-prem Jira."
     )
-    d.box(20, 650, 1210, 200, legend, NOTE, "align=left;verticalAlign=top;spacingLeft=10;spacingTop=6;fontFamily=Courier New;fontSize=11;")
-    return d.save("aws-option1-token-boundaries.drawio", 1260, 880)
+    d.box(20, 650, 1210, 230, legend, NOTE, "align=left;verticalAlign=top;spacingLeft=10;spacingTop=6;fontFamily=Courier New;fontSize=11;")
+    return d.save("aws-option1-token-boundaries.drawio", 1260, 910)
 
 
 # --------------------------------------------------------------------------- 2. sequence diagram
@@ -141,7 +146,7 @@ PARTS = [
     ("cog", "Amazon Cognito\nuser pool"),
     ("gw", "AgentCore\nGateway"),
     ("id", "AgentCore Identity\n(token vault)"),
-    ("aws", "KMS +\nSecrets Manager"),
+    ("aws", "KMS + Secrets Mgr\n(managed by\nAgentCore Identity)"),
     ("ret", "Return-URL app\n(your app)"),
     ("jira", "Jira / Confluence\nDC"),
 ]
@@ -181,7 +186,7 @@ STEPS = [
     ("note", "user", "jira", "H2: Jira login + consent (this is the identity mapping)"),
     ("msg", "jira", "user", "302 -> AgentCore Identity callback ?code&state", True),
     ("msg", "user", "id", "GET /identities/oauth2/callback"),
-    ("msg", "id", "aws", "read client secret T8 (Secrets Manager)"),
+    ("msg", "id", "aws", "read client secret T8 (secret AgentCore created)"),
     ("msg", "id", "jira", "POST /rest/oauth2/latest/token (code, verifier, T8)   [R1 network path]"),
     ("msg", "jira", "id", "T4 + T5", True),
     ("msg", "id", "user", "302 -> returnUrl?session_id=sessionUri", True),
@@ -286,6 +291,8 @@ def boundaries2() -> Path:
     d.box(1000, 290, 240, 330, "Client / on-prem network", ZONE,
           "verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;")
 
+    d.box(625, 315, 320, 280, "Managed by AgentCore Identity (created automatically; you grant IAM access, you don't provision them)", MANAGED,
+          "verticalAlign=bottom;align=left;spacingLeft=6;spacingBottom=4;fontSize=9;whiteSpace=wrap;")
     browser = d.box(50, 100, 240, 70, "Browser\n(aws login sign-in, H2 Atlassian consent)")
     mc = d.box(50, 230, 240, 60, "MCP client (Claude Code)\nno AWS keys, no tokens")
     proxy = d.box(50, 340, 240, 80, "MCP Proxy for AWS (stdio)\nsigns every request with C1\n(SigV4, service bedrock-agentcore)")
@@ -293,8 +300,8 @@ def boundaries2() -> Path:
     signin = d.box(390, 110, 200, 100, "AWS Sign-In / aws login\nIAM user + MFA\n-> C1 temporary credentials\n(~/.aws/login/cache)")
     gw = d.box(390, 360, 180, 100, "AgentCore Gateway\nAWS_IAM inbound\nverifies SigV4 + IAM policy\ncaller = IAM user ARN  [A1]")
     ident = d.box(640, 340, 290, 110, "AgentCore Identity\ntoken vault: T4/T5 per\n(workload, IAM principal, provider)  [A1]\ncallback endpoint (regional)")
-    kms = d.box(640, 500, 135, 70, "AWS KMS\n(vault encryption)")
-    sm = d.box(795, 500, 135, 70, "Secrets Manager\nT8: Atlassian\nclient secrets")
+    kms = d.box(640, 470, 135, 70, "AWS KMS\nvault encryption\n(AWS-managed key;\nCMK optional)", MANAGED)
+    sm = d.box(795, 470, 135, 70, "Secrets Manager\nT8 secret, created by\nCreateOauth2\nCredentialProvider", MANAGED)
     jira = d.box(1030, 350, 190, 70, "Jira DC\n(OAuth 2.0 provider +\nREST API)")
     conf = d.box(1030, 470, 190, 70, "Confluence DC\n(separate app link,\nseparate consent)")
 
@@ -322,7 +329,8 @@ def boundaries2() -> Path:
         "SigV4  Per-request signature made with C1. Proves the caller's IAM principal. NOT a bearer token, nothing to replay.\n"
         "T3     AgentCore workload access token: binds workload (gateway) + user (= IAM principal, A1). Internal.\n"
         "T4/T5  Atlassian access / refresh tokens. Only in the token vault (KMS); T4 lent to the Gateway per call.\n"
-        "T8     Atlassian OAuth client id/secret (app link) in Secrets Manager.\n"
+        "T8     Atlassian OAuth client secret (app link). AgentCore Identity creates the Secrets Manager secret itself when you\n"
+        "       create the credential provider; the gateway role needs secretsmanager:GetSecretValue on it. KMS likewise is managed.\n"
         "\n"
         "ASSUMPTIONS (not documented by AWS - confirm before relying on them)\n"
         "A1  AWS_IAM inbound + OAuth authorization-code outbound is supported, and the vault user id = the caller's IAM\n"
@@ -332,9 +340,9 @@ def boundaries2() -> Path:
         "    a consent they started (the browser has no IdP session to prove it). The loopback helper is custom code.\n"
         "A4  MCP Proxy for AWS passes URL elicitations / InputRequiredResult through to the client unchanged."
     )
-    d.box(20, 650, 1220, 270, legend, NOTE,
+    d.box(20, 650, 1220, 290, legend, NOTE,
           "align=left;verticalAlign=top;spacingLeft=10;spacingTop=6;fontFamily=Courier New;fontSize=11;")
-    return d.save("aws-option2-token-boundaries.drawio", 1270, 950)
+    return d.save("aws-option2-token-boundaries.drawio", 1270, 970)
 
 
 PARTS2 = [
@@ -345,7 +353,7 @@ PARTS2 = [
     ("si", "AWS Sign-In\n(aws login)"),
     ("gw", "AgentCore\nGateway"),
     ("id", "AgentCore Identity\n(token vault)"),
-    ("aws", "KMS +\nSecrets Manager"),
+    ("aws", "KMS + Secrets Mgr\n(managed by\nAgentCore Identity)"),
     ("jira", "Jira / Confluence\nDC"),
 ]
 
@@ -375,7 +383,7 @@ STEPS2 = [
     ("note", "user", "jira", "H2: Jira login + consent (this is the identity mapping)"),
     ("msg", "jira", "user", "302 -> AgentCore Identity callback ?code&state", True),
     ("msg", "user", "id", "GET /identities/oauth2/callback"),
-    ("msg", "id", "aws", "read client secret T8"),
+    ("msg", "id", "aws", "read client secret T8 (secret AgentCore created)"),
     ("msg", "id", "jira", "POST /rest/oauth2/latest/token (code, verifier, T8)   [R1]"),
     ("msg", "jira", "id", "T4 + T5", True),
     ("msg", "id", "user", "302 -> http://localhost:<port>/return?session_id", True),
