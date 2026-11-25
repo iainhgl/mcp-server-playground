@@ -1,10 +1,13 @@
-"""Generate two draw.io diagrams for the AWS "option 1" design (Cognito federated to IAM Identity Center
-in front of AgentCore Gateway, Atlassian DC downstream). Plain shapes, plain-text labels and grey fills only,
-so they import cleanly into Gliffy.
+"""Generate draw.io diagrams for the AWS designs (plain shapes, plain-text labels, grey fills only, so they
+import cleanly into Gliffy):
 
-    python3 docs/diagrams/aws_option1_diagrams.py
+  option 1  Cognito federated to IAM Identity Center -> AgentCore Gateway (CUSTOM_JWT) -> Atlassian DC
+  option 2  MCP Proxy for AWS (SigV4) -> AgentCore Gateway (AWS_IAM) -> Atlassian DC, ASSUMING the gateway maps
+            the IAM caller to a per-user token-vault identity (assumptions A1-A4 are marked on the diagrams)
 
-writes docs/diagrams/aws-option1-token-boundaries.drawio and docs/diagrams/aws-option1-sequence.drawio
+    python3 docs/diagrams/aws_diagrams.py
+
+writes docs/diagrams/aws-option{1,2}-token-boundaries.drawio and aws-option{1,2}-sequence.drawio
 """
 
 from pathlib import Path
@@ -209,18 +212,23 @@ STEPS = [
 
 
 def sequence() -> Path:
-    d = Diagram("Option 1 - sequence")
+    return sequence_diagram("Option 1 - sequence", "AWS option 1 - calls and token exchanges (Cognito federated to IAM"
+                            " Identity Center -> AgentCore Gateway -> Atlassian DC)", PARTS, STEPS,
+                            "aws-option1-sequence.drawio")
+
+
+def sequence_diagram(name: str, title: str, parts: list, steps: list, filename: str) -> Path:
+    d = Diagram(name)
     left, gap, bw, bh, top = 40, 175, 150, 50, 50
-    xs = {k: left + i * gap + bw / 2 for i, (k, _) in enumerate(PARTS)}
-    width = left * 2 + gap * (len(PARTS) - 1) + bw
-    d.text(left, 10, width, 30, "AWS option 1 - calls and token exchanges (Cognito federated to IAM Identity Center ->"
-           " AgentCore Gateway -> Atlassian DC)", "fontSize=15;fontStyle=1;align=left;")
+    xs = {k: left + i * gap + bw / 2 for i, (k, _) in enumerate(parts)}
+    width = left * 2 + gap * (len(parts) - 1) + bw
+    d.text(left, 10, width, 30, title, "fontSize=15;fontStyle=1;align=left;")
 
     y = top + bh + 30
     groups_open: list[tuple[str, float]] = []
     later: list[str] = []  # group rectangles are drawn first (behind), collected then prepended
     content_start = len(d.cells)
-    for step in STEPS:
+    for step in steps:
         kind = step[0]
         if kind == "group":
             groups_open.append((step[1], y))
@@ -254,14 +262,155 @@ def sequence() -> Path:
         d.box(left - 25, gy - 4, width - left + 10, gend - gy, title, GROUP,
               "verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;fontSize=11;")
     # lifelines + head/foot boxes (mermaid style: actors mirrored at the bottom)
-    for (k, label), x in zip(PARTS, xs.values()):
+    for (k, label), x in zip(parts, xs.values()):
         d.line(x, top + bh, x, bottom, "", "endArrow=none;dashed=1;strokeColor=#999999;")
         d.box(x - bw / 2, top, bw, bh, label, BOX, "fontSize=11;")
         d.box(x - bw / 2, bottom, bw, bh, label, BOX, "fontSize=11;")
     d.cells.extend(content)
-    return d.save("aws-option1-sequence.drawio", int(width + 40), int(bottom + bh + 40))
+    return d.save(filename, int(width + 40), int(bottom + bh + 40))
+
+
+# =========================================================================== option 2 (SigV4 in, ASSUMED mapping)
+
+def boundaries2() -> Path:
+    d = Diagram("Option 2 - token boundaries")
+    d.text(20, 10, 1240, 30, "AWS option 2: MCP Proxy for AWS (SigV4) -> AgentCore Gateway (AWS_IAM inbound) - which"
+           " credential or token crosses which boundary.  ASSUMES A1-A4 (see legend)",
+           "fontSize=16;fontStyle=1;align=left;")
+
+    d.box(20, 60, 300, 520, "User device", ZONE, "verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;")
+    d.box(360, 60, 260, 190, "AWS sign-in (native IAM users)", ZONE,
+          "verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;")
+    d.box(360, 290, 600, 330, "AWS account - Amazon Bedrock AgentCore", ZONE,
+          "verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;")
+    d.box(1000, 290, 240, 330, "Client / on-prem network", ZONE,
+          "verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;")
+
+    browser = d.box(50, 100, 240, 70, "Browser\n(aws login sign-in, H2 Atlassian consent)")
+    mc = d.box(50, 230, 240, 60, "MCP client (Claude Code)\nno AWS keys, no tokens")
+    proxy = d.box(50, 340, 240, 80, "MCP Proxy for AWS (stdio)\nsigns every request with C1\n(SigV4, service bedrock-agentcore)")
+    helper = d.box(50, 470, 240, 80, "Loopback return helper\n(custom, http://localhost:<port>)\nbinds consent with C1  [A2, A3]")
+    signin = d.box(390, 110, 200, 100, "AWS Sign-In / aws login\nIAM user + MFA\n-> C1 temporary credentials\n(~/.aws/login/cache)")
+    gw = d.box(390, 360, 180, 100, "AgentCore Gateway\nAWS_IAM inbound\nverifies SigV4 + IAM policy\ncaller = IAM user ARN  [A1]")
+    ident = d.box(640, 340, 290, 110, "AgentCore Identity\ntoken vault: T4/T5 per\n(workload, IAM principal, provider)  [A1]\ncallback endpoint (regional)")
+    kms = d.box(640, 500, 135, 70, "AWS KMS\n(vault encryption)")
+    sm = d.box(795, 500, 135, 70, "Secrets Manager\nT8: Atlassian\nclient secrets")
+    jira = d.box(1030, 350, 190, 70, "Jira DC\n(OAuth 2.0 provider +\nREST API)")
+    conf = d.box(1030, 470, 190, 70, "Confluence DC\n(separate app link,\nseparate consent)")
+
+    d.line(0, 0, 0, 0, "C0: console sign-in\n(IAM user password + MFA)", "endArrow=block;startArrow=block;", browser, signin)
+    d.line(0, 0, 0, 0, "C1 cached locally", "endArrow=block;dashed=1;", signin, proxy)
+    d.line(0, 0, 0, 0, "MCP over stdio\n(no credentials)", "endArrow=block;startArrow=block;", mc, proxy)
+    d.line(0, 0, 0, 0, "MCP + SigV4 (C1)\nper-request signature,\nnot a bearer token", "endArrow=block;", proxy, gw)
+    d.line(0, 0, 0, 0, "caller principal -> T3\nT3 -> T4  (internal)  [A1]", "endArrow=block;startArrow=block;", gw, ident)
+    d.line(0, 0, 0, 0, "wrap / unwrap\ndata keys", "endArrow=block;startArrow=block;", ident, kms)
+    d.line(0, 0, 0, 0, "read T8", "endArrow=block;", ident, sm)
+    d.line(0, 0, 0, 0, "Bearer T4 only", "endArrow=block;", gw, jira)
+    d.line(0, 0, 0, 0, "code + verifier + T8 -> T4/T5\nrefresh T5\n(R1: reachable from AWS?)",
+           "endArrow=block;startArrow=block;", ident, jira)
+    d.line(0, 0, 0, 0, "Bearer T4", "endArrow=block;dashed=1;", gw, conf)
+    d.line(0, 0, 0, 0, "opens consent URL", "endArrow=block;dashed=1;", mc, browser)
+    d.line(0, 0, 0, 0, "H2: login + consent", "endArrow=block;dashed=1;", browser, jira)
+    d.line(0, 0, 0, 0, "callback ?code&state", "endArrow=block;dashed=1;", browser, ident)
+    d.line(0, 0, 0, 0, "302 localhost ?session_id", "endArrow=block;dashed=1;", browser, helper)
+    d.line(0, 0, 0, 0, "CompleteResourceTokenAuth\nSigV4 (C1): signer == session user  [A3]", "endArrow=block;", helper, ident)
+
+    legend = (
+        "Credentials and tokens\n"
+        "C0     Console sign-in (IAM user + MFA) in the browser, via `aws login`. Native AWS login, no enterprise IdP.\n"
+        "C1     Temporary IAM credentials from aws login (auto-rotated, cached on disk). Used only by the proxy / helper to sign.\n"
+        "SigV4  Per-request signature made with C1. Proves the caller's IAM principal. NOT a bearer token, nothing to replay.\n"
+        "T3     AgentCore workload access token: binds workload (gateway) + user (= IAM principal, A1). Internal.\n"
+        "T4/T5  Atlassian access / refresh tokens. Only in the token vault (KMS); T4 lent to the Gateway per call.\n"
+        "T8     Atlassian OAuth client id/secret (app link) in Secrets Manager.\n"
+        "\n"
+        "ASSUMPTIONS (not documented by AWS - confirm before relying on them)\n"
+        "A1  AWS_IAM inbound + OAuth authorization-code outbound is supported, and the vault user id = the caller's IAM\n"
+        "    principal (IAM user ARN, or SourceIdentity / session name for roles). Shared users/roles would collapse people.\n"
+        "A2  The workload's allowed return URLs accept a loopback URL (http://localhost:<port>/...).\n"
+        "A3  CompleteResourceTokenAuth called with IAM credentials binds to the SIGNER, so only the same person can finish\n"
+        "    a consent they started (the browser has no IdP session to prove it). The loopback helper is custom code.\n"
+        "A4  MCP Proxy for AWS passes URL elicitations / InputRequiredResult through to the client unchanged."
+    )
+    d.box(20, 650, 1220, 270, legend, NOTE,
+          "align=left;verticalAlign=top;spacingLeft=10;spacingTop=6;fontFamily=Courier New;fontSize=11;")
+    return d.save("aws-option2-token-boundaries.drawio", 1270, 950)
+
+
+PARTS2 = [
+    ("user", "User\n(browser)"),
+    ("mc", "MCP client\n(Claude Code)"),
+    ("px", "MCP Proxy\nfor AWS (local)"),
+    ("hlp", "Loopback return\nhelper (local)"),
+    ("si", "AWS Sign-In\n(aws login)"),
+    ("gw", "AgentCore\nGateway"),
+    ("id", "AgentCore Identity\n(token vault)"),
+    ("aws", "KMS +\nSecrets Manager"),
+    ("jira", "Jira / Confluence\nDC"),
+]
+
+STEPS2 = [
+    ("group", "A. Get AWS credentials and connect (no OAuth to the gateway)"),
+    ("msg", "user", "si", "aws login -> browser: IAM user + password + MFA (C0)"),
+    ("msg", "si", "px", "C1 temporary credentials cached (~/.aws/login/cache)", True),
+    ("note", "mc", "px", "Claude Code launches: uvx mcp-proxy-for-aws <gateway-url> --service bedrock-agentcore"),
+    ("msg", "mc", "px", "initialize (stdio, no credentials)"),
+    ("msg", "px", "gw", "POST /mcp initialize   [SigV4 signed with C1]"),
+    ("self", "gw", "verify SigV4 + IAM policy InvokeGateway; caller = IAM user ARN"),
+    ("msg", "gw", "px", "session established", True),
+    ("msg", "px", "mc", "initialize result", True),
+    ("end",),
+    ("group", "B. First Atlassian call -> consent (H2) -> loopback binding   [assumes A1-A4]"),
+    ("msg", "mc", "px", "tools/call jira___search_issues"),
+    ("msg", "px", "gw", "tools/call   [SigV4, C1]"),
+    ("msg", "gw", "id", "workload token for user = caller IAM principal   [A1]"),
+    ("msg", "id", "gw", "T3 (workload + IAM principal)", True),
+    ("msg", "gw", "id", "GetResourceOauth2Token(T3, jira-dc, USER_FEDERATION, returnUrl=localhost)   [A2]"),
+    ("self", "id", "vault miss -> new 3LO session (state, PKCE)"),
+    ("msg", "id", "gw", "authorizationUrl + sessionUri", True),
+    ("msg", "gw", "px", "URL elicitation (InputRequiredResult / -32042)", True),
+    ("msg", "px", "mc", "passed through unchanged   [A4]", True),
+    ("msg", "mc", "user", "open authorizationUrl"),
+    ("msg", "user", "jira", "/rest/oauth2/latest/authorize (state, code_challenge)"),
+    ("note", "user", "jira", "H2: Jira login + consent (this is the identity mapping)"),
+    ("msg", "jira", "user", "302 -> AgentCore Identity callback ?code&state", True),
+    ("msg", "user", "id", "GET /identities/oauth2/callback"),
+    ("msg", "id", "aws", "read client secret T8"),
+    ("msg", "id", "jira", "POST /rest/oauth2/latest/token (code, verifier, T8)   [R1]"),
+    ("msg", "jira", "id", "T4 + T5", True),
+    ("msg", "id", "user", "302 -> http://localhost:<port>/return?session_id", True),
+    ("msg", "user", "hlp", "GET /return?session_id  (same machine as the user's C1)"),
+    ("msg", "hlp", "id", "CompleteResourceTokenAuth(sessionUri)   [SigV4 with C1]   [A3]"),
+    ("self", "id", "binding: signer principal == session user, else reject"),
+    ("msg", "id", "aws", "KMS: encrypt T4/T5 into the vault"),
+    ("msg", "hlp", "user", "'Jira connected'", True),
+    ("msg", "mc", "px", "retry tools/call"),
+    ("msg", "px", "gw", "tools/call   [SigV4, C1]"),
+    ("msg", "gw", "id", "workload token + GetResourceOauth2Token"),
+    ("msg", "id", "aws", "KMS decrypt"),
+    ("msg", "id", "gw", "T4", True),
+    ("msg", "gw", "jira", "GET /rest/api/2/search [Bearer T4]"),
+    ("msg", "jira", "gw", "the user's issues only", True),
+    ("msg", "gw", "px", "tool result (data, no tokens)", True),
+    ("msg", "px", "mc", "tool result", True),
+    ("end",),
+    ("group", "C. Later calls / refresh"),
+    ("self", "px", "C1 auto-refreshed by the AWS CLI/SDK (aws login session)"),
+    ("msg", "gw", "id", "GetResourceOauth2Token(T3, jira-dc)"),
+    ("self", "id", "T4 expired -> refresh under lock"),
+    ("msg", "id", "jira", "POST token (refresh_token = T5)"),
+    ("msg", "jira", "id", "new T4 + new T5 (rotation)", True),
+    ("msg", "id", "gw", "T4", True),
+    ("end",),
+]
+
+
+def sequence2() -> Path:
+    return sequence_diagram("Option 2 - sequence", "AWS option 2 - calls and token exchanges (MCP Proxy for AWS, SigV4"
+                            " -> AgentCore Gateway AWS_IAM -> Atlassian DC).  ASSUMES A1-A4", PARTS2, STEPS2,
+                            "aws-option2-sequence.drawio")
 
 
 if __name__ == "__main__":
-    for p in (boundaries(), sequence()):
+    for p in (boundaries(), sequence(), boundaries2(), sequence2()):
         print(p)
